@@ -1,30 +1,36 @@
 def stylesheet(theme='dark'):
     light=theme=='light'
-    bg='#f5f6f8' if light else '#101217'; panel='#ffffff' if light else '#191d25'
-    fg='#20252f' if light else '#ebedf3'; muted='#626b79' if light else '#929bab'; border='#dce0e6' if light else '#303744'
+    bg='#f4f6f9' if light else '#10151d'; panel='#ffffff' if light else '#1b2430'
+    fg='#202936' if light else '#f1f4f8'; muted='#667487' if light else '#a9b5c6'; border='#dbe2e9' if light else '#334154'
+    hover='#fff0e3' if light else '#2c3540';selected='#ffe9d5' if light else '#493a32'
     return f'''
     QWidget {{ background:{bg}; color:{fg}; font-family:"Segoe UI","DejaVu Sans"; font-size:14px; }}
     QMainWindow {{ background:{bg}; }}
     QLabel {{ background:transparent; }}
-    QLabel#title {{font-size:30px;font-weight:700;}}
-    QLabel#subtitle {{color:{muted};font-size:14px;}}
-    QLabel#brand {{font-size:21px;font-weight:800;color:#ff9c56;padding:12px;}}
-    QFrame#card,QGroupBox {{background:{panel};border:1px solid {border};border-radius:14px;padding:16px;}}
+    QLabel#title {{font-size:28px;font-weight:700;}}
+    QLabel#subtitle {{color:{muted};font-size:13px;}}
+    QLabel#brand {{font-size:20px;font-weight:800;color:#ff9c56;padding:0;}}
+    QFrame#card,QGroupBox {{background:{panel};border:1px solid {border};border-radius:16px;padding:14px;}}
     QGroupBox {{margin-top:12px;}}
     QGroupBox::title {{subcontrol-origin:margin;left:18px;padding:0 6px;}}
-    QPushButton {{background:{panel};border:1px solid {border};border-radius:9px;padding:10px 16px;text-align:left;}}
-    QPushButton:hover {{border-color:#ff9c56;background:{'#fff0e7' if light else '#2b2525'};}}
-    QPushButton:pressed {{background:{'#ffe0cb' if light else '#413025'};}}
+    QPushButton {{background:{panel};border:1px solid {border};border-radius:10px;padding:10px 13px;text-align:left;min-height:22px;}}
+    QPushButton:hover {{border-color:#ff9c56;background:{hover};}}
+    QPushButton:pressed {{background:{selected};}}
+    QPushButton:focus {{border-color:#ff9c56;}}
     QPushButton:disabled {{color:{muted};}}
-    QPushButton#primary {{background:#ff9c56;color:#19130f;font-weight:700;border:0;text-align:center;}}
-    QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox {{background:{panel};border:1px solid {border};border-radius:7px;padding:7px;min-height:20px;}}
+    QPushButton#primary {{background:#ff9c56;color:#19130f;font-weight:700;border:1px solid #ff9c56;text-align:center;}}
+    QPushButton#primary:hover {{background:#ffb979;}}
+    QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox {{background:{panel};border:1px solid {border};border-radius:9px;padding:8px;min-height:22px;}}
+    QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus {{border-color:#ff9c56;}}
     QComboBox::drop-down {{border:0;width:22px;}}
     QComboBox QAbstractItemView {{background:{panel};selection-background-color:#6a4227;}}
     QListWidget {{background:{panel};border:1px solid {border};border-radius:12px;padding:8px;outline:0;}}
-    QListWidget::item {{padding:12px;border-radius:7px;}}
-    QListWidget::item:selected {{background:{'#ffdfc9' if light else '#493222'};color:{fg};}}
+    QListWidget::item {{padding:11px;border-radius:9px;}}
+    QListWidget::item:selected {{background:{selected};color:{fg};}}
     QListWidget#nav {{background:transparent;border:0;padding:0;}}
-    QListWidget#nav::item {{padding:11px 14px;margin:2px 0;}}
+    QListWidget#nav::item {{padding:9px 12px;margin:2px 0;border-radius:10px;}}
+    QListWidget#nav::item:hover {{background:{hover};}}
+    QListWidget#nav::item:selected {{background:{selected};color:{fg};font-weight:600;}}
     QScrollArea {{border:0;background:transparent;}}
     QScrollBar:vertical {{background:transparent;width:10px;margin:0;}}
     QScrollBar::handle:vertical {{background:{border};border-radius:5px;min-height:30px;}}

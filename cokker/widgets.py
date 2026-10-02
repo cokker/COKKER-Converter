@@ -1,5 +1,5 @@
 from pathlib import Path
-from PySide6.QtCore import Qt, QMimeData, QUrl, QRect, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QMimeData, QUrl, QRect, Signal, QPropertyAnimation, QEasingCurve, Property
 from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor, QPen
 from PySide6.QtWidgets import QListWidget, QAbstractItemView, QLabel, QWidget, QVBoxLayout, QPushButton, QScrollArea
 
@@ -65,9 +65,41 @@ class Section(QWidget):
         self.button.clicked.connect(self.toggle); layout.addWidget(self.button); layout.addWidget(body); body.hide()
     def toggle(self,checked):
         self.button.setText(('⌄  ' if checked else '›  ')+self.title)
-        if not checked: self.body.hide(); return
-        self.body.show()
-        if self.animate():
-            target=self.body.sizeHint().height(); self.anim=QPropertyAnimation(self.body,b'maximumHeight',self)
-            self.anim.setDuration(180); self.anim.setStartValue(0); self.anim.setEndValue(target)
-            self.anim.setEasingCurve(QEasingCurve.Type.OutCubic); self.anim.finished.connect(lambda:self.body.setMaximumHeight(16777215)); self.anim.start()
+        if self.anim: self.anim.stop()
+        if not self.animate():
+            self.body.setMaximumHeight(16777215);self.body.setVisible(checked);return
+        if checked: self.body.show()
+        start=self.body.height() if self.body.isVisible() else 0
+        end=self.body.sizeHint().height() if checked else 0
+        self.anim=QPropertyAnimation(self.body,b'maximumHeight',self)
+        self.anim.setDuration(190);self.anim.setStartValue(start);self.anim.setEndValue(end)
+        self.anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        def finish():
+            if checked:self.body.setMaximumHeight(16777215)
+            else:self.body.hide()
+        self.anim.finished.connect(finish);self.anim.start()
+
+class AnimatedButton(QPushButton):
+    """Subtle accent line on hover, without repolishing the whole window."""
+    def __init__(self,text='',parent=None,animate=lambda:True):
+        super().__init__(text,parent);self._accent=0.0;self.animate=animate
+        self._animation=QPropertyAnimation(self,b'accent',self)
+        self._animation.setDuration(150);self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+    def get_accent(self): return self._accent
+    def set_accent(self,value): self._accent=value;self.update()
+    accent=Property(float,get_accent,set_accent)
+    def enterEvent(self,event):
+        super().enterEvent(event);self.transition(1)
+    def leaveEvent(self,event):
+        super().leaveEvent(event);self.transition(0)
+    def transition(self,target):
+        self._animation.stop()
+        if not self.animate():self.set_accent(target);return
+        self._animation.setStartValue(self._accent);self._animation.setEndValue(target);self._animation.start()
+    def paintEvent(self,event):
+        super().paintEvent(event)
+        if self._accent and self.objectName()!='primary':
+            painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            tint=QColor('#ff9c56');tint.setAlphaF(.75*self._accent)
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(tint)
+            painter.drawRoundedRect(QRect(13,self.height()-5,max(0,self.width()-26),2),1,1)

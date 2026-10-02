@@ -17,8 +17,12 @@ def main():
         from cokker.engine import Engine
         from cokker.platform_services import executable
         with tempfile.TemporaryDirectory() as d:
-            folder=Path(d);window=Window(Store(folder/'settings'));window.navigate('Настройки');window.navigate('Очередь');window.exiting=True;window.close()
-            image=folder/'input.png';Image.new('RGB',(100,80),(255,120,35)).save(image)
+            folder=Path(d);image=folder/'input.png';Image.new('RGB',(100,80),(255,120,35)).save(image)
+            window=Window(Store(folder/'settings'));window.navigate('Настройки');window.navigate('Очередь')
+            if not window.icon.availableSizes(): raise RuntimeError('Логотип не включён в сборку')
+            window.receive_paths([str(image)])
+            if window.operation.currentData()!='image' or window.operation.count()!=3: raise RuntimeError('Автоопределение PNG не работает')
+            window.exiting=True;window.close()
             Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)))
             if not executable('ffmpeg') or not executable('ffprobe'): raise RuntimeError('FFmpeg отсутствует в сборке')
             source=folder/'source.mp4'

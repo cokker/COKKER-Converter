@@ -2,18 +2,19 @@ import json, os, sys, uuid, time
 from pathlib import Path
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData, QPropertyAnimation, QEasingCurve, QSize
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QDesktopServices, QPixmap, QIcon, QPainter, QColor
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy)
 from . import __version__
 from .models import Options,Job
-from .registry import OPERATIONS,REGISTRY,category
+from .registry import OPERATIONS,REGISTRY,category,compatible_operations,file_kind
+from .icons import icon_for
 from .storage import Store,Presets
 from .queue import Queue
 from .engine import Engine
 from .platform_services import executable,URLS,REPO,startup,latest_release
 from .style import stylesheet
-from .widgets import FileList,Results,CropCanvas,Section
+from .widgets import FileList,Results,CropCanvas,Section,AnimatedButton
 
 class Async(QObject):
     result=Signal(object,object)
@@ -33,7 +34,8 @@ def label(text,kind=None):
     return w
 
 def button(text,fn,primary=False):
-    b=QPushButton(text); b.clicked.connect(lambda checked=False:fn())
+    b=AnimatedButton(text,animate=lambda:QApplication.instance().property('animations') is not False)
+    b.clicked.connect(lambda checked=False:fn())
     if primary: b.setObjectName('primary')
     return b
 
@@ -59,6 +61,8 @@ class Window(QMainWindow):
         super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async()
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
+        QApplication.instance().setProperty('animations',self.store.get('animations',True))
+        self.notice_timer.setSingleShot(True);self.notice_timer.timeout.connect(self.notice_timer_done)
         self.build_icon(); self.setWindowIcon(self.icon); self.build(); self.build_tray(); self.apply_theme()
         self.queue.changed.connect(self.refresh_queue); self.queue.completed.connect(self.completed)
         self.tick=QTimer(self); self.tick.timeout.connect(self.refresh_queue); self.tick.start(700)
@@ -70,23 +74,28 @@ class Window(QMainWindow):
         if geometry: self.resize(max(840,geometry[0]),max(600,geometry[1]))
         if any(j.status=='interrupted' for j in self.queue.jobs): QTimer.singleShot(400,self.recovery)
     def build_icon(self):
-        pix=QPixmap(64,64); pix.fill(Qt.GlobalColor.transparent); p=QPainter(pix); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor('#ff9c56')); p.setPen(Qt.PenStyle.NoPen); p.drawRoundedRect(3,3,58,58,16,16)
-        p.setPen(QColor('#171a21')); font=p.font(); font.setPixelSize(40); font.setBold(True); p.setFont(font); p.drawText(pix.rect(),Qt.AlignmentFlag.AlignCenter,'C'); p.end(); self.icon=QIcon(pix)
+        base=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))
+        pix=QPixmap(str(base/'assets'/'logo.png'))
+        self.icon=QIcon(pix) if not pix.isNull() else icon_for('vr')
     def build(self):
         central=QWidget(); self.setCentralWidget(central); root=QHBoxLayout(central); root.setContentsMargins(18,18,18,18); root.setSpacing(22)
-        side=QWidget(); side.setFixedWidth(210); sl=QVBoxLayout(side); sl.setContentsMargins(0,0,0,0)
-        sl.addWidget(label('COKKER\nConverter','brand'))
+        side=QWidget(); side.setFixedWidth(220); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,0,4);sl.setSpacing(16)
+        branding=QWidget();brand_row=QHBoxLayout(branding);brand_row.setContentsMargins(6,0,6,0);brand_row.setSpacing(10)
+        logo=QLabel();logo.setPixmap(self.icon.pixmap(QSize(54,54)));logo.setFixedSize(54,54);brand_row.addWidget(logo)
+        brand_row.addWidget(label('COKKER\nConverter','brand'),1);sl.addWidget(branding)
         self.nav=QListWidget(); self.nav.setObjectName('nav')
-        self.nav.addItems(['Главная','Избранное','Очередь','История','Видео','Аудио','Изображения','Документы','PDF','Архивы','Электронные книги','VRChat','Настройки','О программе'])
+        self.nav.setIconSize(QSize(22,22))
+        for name in ('Главная','Избранное','Очередь','История','Видео','Аудио','Изображения','Документы','PDF','Архивы','Электронные книги','VRChat','Настройки','О программе'):
+            self.nav.addItem(QListWidgetItem(icon_for(name),name))
+        self.nav.setCurrentRow(0)
         self.nav.currentTextChanged.connect(self.navigate); sl.addWidget(self.nav); sl.addWidget(label('Локально. Быстро. Твои файлы.','subtitle')); root.addWidget(side)
-        main=QWidget(); ml=QVBoxLayout(main); ml.setContentsMargins(0,0,0,0); ml.setSpacing(16)
+        main=QWidget(); ml=QVBoxLayout(main); ml.setContentsMargins(0,2,0,0); ml.setSpacing(16)
         top=QHBoxLayout(); self.heading=label('Начнём с файла','title'); top.addWidget(self.heading,1)
         self.search=QLineEdit(); self.search.setPlaceholderText('Найти инструмент   Ctrl+F'); self.search.setMaximumWidth(300); self.search.textChanged.connect(self.filter_tools); top.addWidget(self.search); ml.addLayout(top)
         self.notice=label(''); self.notice.setStyleSheet('color:#ff9c56;padding:8px;'); self.notice.hide(); ml.addWidget(self.notice)
         self.pages=QStackedWidget(); ml.addWidget(self.pages,1); root.addWidget(main,1)
         self.home,self.home_layout=self.page(); self.tools_widget=QWidget(); self.tools_grid=QGridLayout(self.tools_widget); self.tools_grid.setContentsMargins(0,0,0,0)
-        self.home_layout.addWidget(label('Перетащи файлы, выбери действие — остальное сделаем здесь.','subtitle'))
+        self.home_layout.addWidget(label('Перетащи файлы — подходящие действия появятся автоматически.','subtitle'))
         drop,dl=card(); dl.addWidget(label('Добавь видео, музыку, изображения или документы','title'))
         dl.addWidget(label('Перетаскивание файлов и папок • Ctrl+V из буфера обмена','subtitle'))
         actions=QHBoxLayout(); actions.addWidget(button('Выбрать файлы',self.choose_files,True)); actions.addWidget(button('Добавить папку',self.choose_folder)); actions.addStretch(); dl.addLayout(actions); self.home_layout.addWidget(drop)
@@ -94,22 +103,25 @@ class Window(QMainWindow):
         self.editor,self.editor_layout=self.page(); self.build_editor()
         self.queue_page,self.ql=self.page(); self.queue_list=Results(); self.queue_list.setMinimumHeight(350); self.ql.addWidget(self.queue_list,1)
         self.progress=QProgressBar(); self.ql.addWidget(self.progress)
-        row=QHBoxLayout()
-        for text,fn in [('Открыть',self.open_result),('Папка',self.open_folder),('Копировать файлы',self.copy_results),('Копировать изображение',self.copy_image),('Повторить',self.retry),('Отменить',self.cancel),('Убрать',self.remove)]: row.addWidget(button(text,fn))
+        row=QGridLayout();row.setSpacing(8)
+        for i,(text,fn) in enumerate([('Открыть',self.open_result),('Папка',self.open_folder),('Копировать файлы',self.copy_results),('Копировать изображение',self.copy_image),('Повторить',self.retry),('Отменить',self.cancel),('Убрать',self.remove)]):row.addWidget(button(text,fn),i//2,i%2)
         self.ql.addLayout(row); self.ql.addWidget(button('Подробности ошибки',self.error_details)); self.queue_list.itemDoubleClicked.connect(lambda _:self.open_result())
         self.extra,self.extra_layout=self.page()
         self.rebuild_tools()
     def page(self):
-        content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(4,4,12,12); layout.setSpacing(16)
+        content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(4,6,12,18); layout.setSpacing(16)
         scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(content); self.pages.addWidget(scroll); return scroll,layout
     def build_editor(self):
         self.editor_layout.addWidget(label('1  Исходные файлы','subtitle'))
         self.files=FileList(); self.files.filesDropped.connect(self.add_paths); self.files.itemDoubleClicked.connect(lambda _:self.inspect()); self.editor_layout.addWidget(self.files)
-        row=QHBoxLayout()
-        for text,fn in [('Добавить',self.choose_files),('Папка',self.choose_folder),('Удалить выбранные',self.remove_inputs),('Информация',self.inspect),('Preview / Crop',self.preview)]: row.addWidget(button(text,fn))
+        self.input_summary=label('Добавь файлы — покажу доступные действия.','subtitle');self.editor_layout.addWidget(self.input_summary)
+        row=QGridLayout();row.setSpacing(8)
+        for i,(text,fn) in enumerate([('Добавить',self.choose_files),('Папка',self.choose_folder),('Удалить выбранные',self.remove_inputs),('Информация',self.inspect),('Preview / Crop',self.preview)]):row.addWidget(button(text,fn),i//2,i%2)
         self.editor_layout.addLayout(row)
         basic,bl=card(); form=QFormLayout(); form.setSpacing(12); self.operation=QComboBox()
-        for op in OPERATIONS: self.operation.addItem(op.label,op.id)
+        self.operation.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.operation.setMinimumContentsLength(17);self.operation.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        for op in OPERATIONS: self.operation.addItem(icon_for(op.category),op.label,op.id)
         self.operation.currentIndexChanged.connect(self.operation_changed)
         form.addRow('Действие',self.operation); self.format=QComboBox(); form.addRow('Формат',self.format)
         self.quality=combo(['Сбалансированное','Высокое качество','Максимальное сжатие']); form.addRow('Качество',self.quality)
@@ -137,7 +149,11 @@ class Window(QMainWindow):
         row=QHBoxLayout(); row.addWidget(self.extra_file,1); row.addWidget(button('Выбрать дорожку',self.choose_extra)); self.extra_row=QWidget(); self.extra_row.setLayout(row); self.editor_layout.addWidget(self.extra_row)
         self.hint=label('','subtitle'); self.editor_layout.addWidget(self.hint)
         bottom,bl=card(); row=QHBoxLayout(); self.output=QLineEdit(self.store.get('output',str(Path.home()/'Videos'/'COKKER'))); row.addWidget(self.output,1); row.addWidget(button('Папка результата',self.choose_output)); bl.addLayout(row)
-        row=QHBoxLayout(); row.addWidget(button('Сохранить пресет',self.save_preset)); row.addWidget(button('Сбросить параметры',self.reset_options)); row.addStretch(); row.addWidget(button('Добавить в очередь   Ctrl+Enter',self.enqueue,True)); bl.addLayout(row); self.editor_layout.addWidget(bottom); self.editor_layout.addStretch(); self.operation_changed()
+        row=QGridLayout();row.setSpacing(8)
+        row.addWidget(button('Сохранить пресет',self.save_preset),0,0)
+        row.addWidget(button('Сбросить параметры',self.reset_options),0,1)
+        row.addWidget(button('Добавить в очередь   Ctrl+Enter',self.enqueue,True),1,0,1,2)
+        bl.addLayout(row); self.editor_layout.addWidget(bottom); self.editor_layout.addStretch(); self.operation_changed()
     def operation_changed(self):
         if not hasattr(self,'format') or not hasattr(self,'extra_row'): return
         op=REGISTRY[self.operation.currentData()]; self.format.clear(); self.format.addItems(op.formats)
@@ -194,16 +210,32 @@ class Window(QMainWindow):
     def receive_paths(self,result):
         if isinstance(result,Exception): self.error(result); return
         existing={self.files.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.files.count())}
-        first=not existing
         for p in result:
             if p not in existing:
                 item=QListWidgetItem(Path(p).name); item.setToolTip(p); item.setData(Qt.ItemDataRole.UserRole,p); self.files.addItem(item)
-        if result and first:
-            cat=category(result[0]); op=next((o for o in OPERATIONS if o.category==cat),OPERATIONS[0]); self.set_operation(op.id)
-        self.pages.setCurrentWidget(self.editor); self.heading.setText('Подготовка файлов'); self.toast(f'Добавлено: {len(result)}. Выберите действие и параметры.')
+        self.refresh_compatible()
+        self.show_page(self.editor); self.heading.setText('Подготовка файлов')
+        if result:self.toast(f'Добавлено: {len(result)}. Подходящие действия выбраны автоматически.')
     def input_paths(self): return [self.files.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.files.count())]
     def remove_inputs(self):
         for item in self.files.selectedItems(): self.files.takeItem(self.files.row(item))
+        self.refresh_compatible()
+    def refresh_compatible(self):
+        paths=self.input_paths();allowed=compatible_operations(paths)
+        signature=tuple(sorted({file_kind(path) for path in paths}))
+        preferred=self.operation.currentData() if signature==getattr(self,'_detected_signature',None) else allowed[0].id
+        self._detected_signature=signature
+        if preferred not in {op.id for op in allowed}:preferred=allowed[0].id
+        self.operation.blockSignals(True);self.operation.clear()
+        for op in allowed:self.operation.addItem(icon_for(op.category),op.label,op.id)
+        self.operation.setCurrentIndex(self.operation.findData(preferred));self.operation.blockSignals(False)
+        if paths:
+            kinds={category(path) for path in paths}
+            desc=next(iter(kinds)) if len(kinds)==1 else 'Смешанные типы'
+            self.input_summary.setText(f'{len(paths)} файл(ов) • {desc} • доступно действий: {len(allowed)}')
+        else:self.input_summary.setText('Добавь файлы — покажу доступные действия.')
+        if paths:self.select_section(REGISTRY[preferred].category)
+        self.operation_changed();self.rebuild_tools(self.search.text())
     def choose_extra(self):
         p,_=QFileDialog.getOpenFileName(self,'Выбрать дорожку')
         if p:self.extra_file.setText(p)
@@ -215,39 +247,68 @@ class Window(QMainWindow):
             paths=self.input_paths()
             if not paths: self.choose_files(); return
             o=self.options(); op=REGISTRY[self.operation.currentData()]
+            if op.id not in {candidate.id for candidate in compatible_operations(paths)}:
+                raise ValueError('Выбранное действие не подходит для загруженных файлов.')
             if op.backend in ('ffmpeg','soffice','ebook-convert') and not executable(op.backend): raise ValueError('Нужный компонент не установлен. Откройте Настройки → Компоненты.')
             if not self.output.text().strip(): raise ValueError('Выберите папку результата.')
             jobs=[Job(paths if op.multiple else [p],op.id,asdict(o),self.output.text()) for p in (paths[:1] if op.multiple else paths)]
             self.queue.add(jobs); self.navigate('Очередь')
         except Exception as e:self.error(e)
     def set_operation(self,id):
-        self.operation.setCurrentIndex(self.operation.findData(id)); self.pages.setCurrentWidget(self.editor); self.heading.setText(REGISTRY[id].category)
+        index=self.operation.findData(id)
+        if index<0:
+            self.toast('Это действие не подходит для загруженных файлов. Удалите их или выберите доступное действие.');return
+        self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
+        self.select_section(REGISTRY[id].category)
+    def select_section(self,name):
+        for row in range(self.nav.count()):
+            if self.nav.item(row).text()==name:
+                old=self.nav.blockSignals(True);self.nav.setCurrentRow(row);self.nav.blockSignals(old);break
+    def show_page(self,page):
+        if self.pages.currentWidget() is page:return
+        if getattr(self,'page_anim',None):self.page_anim.stop()
+        if getattr(self,'animated_page',None):self.animated_page.setGraphicsEffect(None)
+        self.pages.setCurrentWidget(page)
+        if not self.store.get('animations',True):return
+        effect=QGraphicsOpacityEffect(page);page.setGraphicsEffect(effect);effect.setOpacity(.72)
+        self.animated_page=page
+        self.page_anim=QPropertyAnimation(effect,b'opacity',self);self.page_anim.setDuration(190)
+        self.page_anim.setStartValue(.72);self.page_anim.setEndValue(1.0)
+        self.page_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.page_anim.finished.connect(lambda:page.setGraphicsEffect(None));self.page_anim.start()
     def navigate(self,name):
         if not name:return
         self.current=name; self.heading.setText('Начнём с файла' if name=='Главная' else name)
-        if name=='Главная': self.pages.setCurrentWidget(self.home)
-        elif name in ('Очередь','История'): self.pages.setCurrentWidget(self.queue_page); self.refresh_queue()
+        if name=='Главная': self.show_page(self.home)
+        elif name in ('Очередь','История'): self.show_page(self.queue_page); self.refresh_queue()
         elif name=='Избранное': self.show_presets()
         elif name=='Настройки': self.show_settings()
         elif name=='О программе': self.show_about()
         else:
-            op=next((o for o in OPERATIONS if o.category==name),None)
+            op=next((o for o in compatible_operations(self.input_paths()) if o.category==name),None)
             if op:self.set_operation(op.id)
+            elif self.input_paths():
+                self.current=REGISTRY[self.operation.currentData()].category
+                self.select_section(self.current);self.show_page(self.editor)
+                self.heading.setText('Подготовка файлов')
+                self.toast('Для загруженных файлов в этом разделе нет подходящих действий.')
     def rebuild_tools(self,query=''):
         while self.tools_grid.count():
             item=self.tools_grid.takeAt(0)
             if item.widget():item.widget().deleteLater()
         featured=('video','remux','audio','image','images_gif','video_gif','emoji','images_pdf','pdf_merge','archive','document','ebook')
-        ops=[o for o in OPERATIONS if (query.lower() in (o.label+' '+o.category).lower() if query else o.id in featured)]
+        allowed={op.id for op in compatible_operations(self.input_paths())}
+        ops=[o for o in OPERATIONS if o.id in allowed and (query.lower() in (o.label+' '+o.category).lower() if query else o.id in featured)]
         for i,op in enumerate(ops):
-            b=button(op.label,lambda id=op.id:self.set_operation(id)); b.setMinimumHeight(62); self.tools_grid.addWidget(b,i//2,i%2)
+            b=button(op.label,lambda id=op.id:self.set_operation(id));b.setIcon(icon_for(op.category));b.setIconSize(QSize(25,25))
+            b.setMinimumHeight(62); self.tools_grid.addWidget(b,i//2,i%2)
     def filter_tools(self,text):
-        self.pages.setCurrentWidget(self.home); self.heading.setText('Инструменты'); self.rebuild_tools(text)
+        self.show_page(self.home); self.heading.setText('Инструменты'); self.rebuild_tools(text)
     def clear_extra(self):
         while self.extra_layout.count():
             item=self.extra_layout.takeAt(0)
             if item.widget():item.widget().deleteLater()
-        self.pages.setCurrentWidget(self.extra)
+        self.show_page(self.extra)
     def selected_jobs(self):
         ids={i.data(Qt.ItemDataRole.UserRole) for i in self.queue_list.selectedItems()}; return [j for j in self.queue.jobs if j.id in ids]
     def refresh_queue(self):
@@ -261,7 +322,7 @@ class Window(QMainWindow):
                 change=(1-j.after/j.before)*100 if j.before else 0
                 text+=f'   •   {size(j.before)} → {size(j.after)}   ({change:+.1f}% экономии)   •   {j.elapsed:.1f} с'
             elif j.status=='failed':text+='   •   '+j.error.splitlines()[-1][:140]
-            item=QListWidgetItem(text); item.setData(Qt.ItemDataRole.UserRole,j.id); item.setData(Qt.ItemDataRole.UserRole+1,j.output if j.status=='done' else ''); self.queue_list.addItem(item); item.setSelected(j.id in selected)
+            item=QListWidgetItem(icon_for(REGISTRY[j.operation].category),text); item.setData(Qt.ItemDataRole.UserRole,j.id); item.setData(Qt.ItemDataRole.UserRole+1,j.output if j.status=='done' else ''); self.queue_list.addItem(item); item.setSelected(j.id in selected)
         self.queue_list.verticalScrollBar().setValue(scroll)
         active=[j for j in jobs if j.status in ('waiting','running')]; complete=sum(j.status=='done' for j in jobs)
         pct=round(sum(j.progress if j.status=='running' else 1 if j.status=='done' else 0 for j in jobs)/max(len(jobs),1)*100)
@@ -340,8 +401,8 @@ class Window(QMainWindow):
         theme=combo(['system','dark','light']);theme.setCurrentText(self.store.get('theme','dark'));theme.currentTextChanged.connect(lambda v:(self.store.set('theme',v),self.apply_theme()));form.addRow('Тема',theme)
         concurrency=spin(1,4,self.store.get('concurrency',1));concurrency.valueChanged.connect(lambda v:self.store.set('concurrency',v));form.addRow('Параллельные задачи',concurrency)
         bl.addLayout(form)
-        for key,text,default in [('animations','Анимация раскрытия настроек',True),('sleep_block','Не давать Windows заснуть во время обработки',True),('clipboard','Ctrl+V: добавлять файлы и изображения',True),('notifications','Уведомления о завершении',True),('close_tray','Закрывать окно в трей',False),('minimize_tray','Сворачивать в трей',False)]:
-            w=QCheckBox(text);w.setChecked(self.store.get(key,default));w.toggled.connect(lambda v,k=key:self.store.set(k,v));bl.addWidget(w)
+        for key,text,default in [('animations','Плавные переходы и отклик кнопок',True),('sleep_block','Не давать Windows заснуть во время обработки',True),('clipboard','Ctrl+V: добавлять файлы и изображения',True),('notifications','Уведомления о завершении',True),('close_tray','Закрывать окно в трей',False),('minimize_tray','Сворачивать в трей',False)]:
+            w=QCheckBox(text);w.setChecked(self.store.get(key,default));w.toggled.connect(lambda v,k=key:(self.store.set(k,v),QApplication.instance().setProperty('animations',v) if k=='animations' else None));bl.addWidget(w)
         self.extra_layout.addWidget(box)
         box,bl=card();bl.addWidget(label('Запуск с Windows','title'));auto=QCheckBox('Запускать вместе с Windows');tray=QCheckBox('При автозапуске открывать сразу в трее');auto.setChecked(self.store.get('autostart',False));tray.setChecked(self.store.get('autostart_tray',False));tray.setEnabled(auto.isChecked());auto.setEnabled(os.name=='nt')
         def save_startup():
@@ -443,6 +504,7 @@ class Window(QMainWindow):
         if e.mimeData().hasUrls():e.acceptProposedAction()
     def dropEvent(self,e):self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]);e.acceptProposedAction()
     def toast(self,text):
-        self.notice.setText(text);self.notice.show();QTimer.singleShot(7000,self.notice.hide)
+        self.notice.setText(text);self.notice.show();self.notice_timer.start(7000)
+    def notice_timer_done(self):self.notice.hide()
     def error(self,e):
         msg=QMessageBox(self);msg.setIcon(QMessageBox.Icon.Warning);msg.setWindowTitle('COKKER Converter');msg.setText('Не удалось выполнить действие');msg.setInformativeText(str(e).splitlines()[-1][:300]);msg.setDetailedText(str(e));msg.exec()

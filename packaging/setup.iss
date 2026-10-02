@@ -1,5 +1,5 @@
 #define AppName "COKKER Converter"
-#define AppVersion "0.9.0"
+#define AppVersion "0.9.1"
 [Setup]
 AppId={{61BE2BDA-3616-4761-96A7-4E5BA25EDB92}
 AppName={#AppName}
@@ -15,6 +15,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\COKKER Converter.exe
+SetupIconFile=..\assets\logo.ico
 [Files]
 Source: "..\dist\COKKER Converter\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 [Icons]

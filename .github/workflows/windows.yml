@@ -30,7 +30,7 @@ jobs:
       - name: Build portable app
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --collect-all pillow_heif --collect-all pypdfium2 main.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --icon "assets/logo.ico" --add-data "assets;assets" --collect-all pillow_heif --collect-all pypdfium2 main.py
           New-Item -ItemType Directory -Force "dist/COKKER Converter/components"
           $ffmpeg = Get-ChildItem "$env:ChocolateyInstall/lib/ffmpeg/tools" -Recurse -File -Filter ffmpeg.exe | Select-Object -First 1
           if (-not $ffmpeg) { throw "Real FFmpeg binary missing" }
