@@ -37,6 +37,13 @@ jobs:
           New-Item -ItemType File "dist/COKKER Converter/portable.flag"
           Copy-Item LICENSE "dist/COKKER Converter/LICENSE-COKKER.txt"
           Compress-Archive -Path "dist/COKKER Converter" -DestinationPath "dist/COKKER-Converter-Portable-x64.zip" -Force
+      - name: Smoke test packaged Windows app
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath "dist/COKKER Converter/COKKER Converter.exe" -ArgumentList "--self-test" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($p.ExitCode)" }
       - name: Build installer
         shell: pwsh
         run: |

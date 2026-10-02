@@ -4,7 +4,7 @@
 AppId={{61BE2BDA-3616-4761-96A7-4E5BA25EDB92}
 AppName={#AppName}
 AppVersion={#AppVersion}
-DefaultDirName={autopf}\COKKER Converter
+DefaultDirName={localappdata}\Programs\COKKER Converter
 DefaultGroupName=COKKER Converter
 OutputDir=..\dist
 OutputBaseFilename=COKKER-Converter-Setup-x64

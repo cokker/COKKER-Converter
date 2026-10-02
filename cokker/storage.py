@@ -41,6 +41,8 @@ class Store:
     def jobs(self):
         with self.lock: rows=self.db.execute('SELECT data FROM jobs ORDER BY rowid').fetchall()
         return [Job(**json.loads(r[0])) for r in rows]
+    def close(self):
+        with self.lock: self.db.close()
     def delete_job(self,id):
         with self.lock: self.db.execute('DELETE FROM jobs WHERE id=?',(id,)); self.db.commit()
 

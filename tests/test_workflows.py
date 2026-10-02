@@ -64,3 +64,4 @@ def test_presets_recovery():
         assert len(p.all())==2
         j=Job(['A'],'image',{'format':'png'},str(d));s.save_job(j)
         assert s.jobs()[0].id==j.id
+        s.close()

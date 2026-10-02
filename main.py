@@ -9,6 +9,22 @@ from cokker.ui import Window
 
 def main():
     app=QApplication(sys.argv);app.setApplicationName('COKKER Converter');app.setOrganizationName('COKKER');app.setQuitOnLastWindowClosed(False)
+    if '--self-test' in sys.argv:
+        import tempfile
+        from PIL import Image
+        from cokker.storage import Store
+        from cokker.models import Job,Options
+        from cokker.engine import Engine
+        from cokker.platform_services import executable
+        with tempfile.TemporaryDirectory() as d:
+            folder=Path(d);window=Window(Store(folder/'settings'));window.navigate('Настройки');window.navigate('Очередь');window.exiting=True;window.close()
+            image=folder/'input.png';Image.new('RGB',(100,80),(255,120,35)).save(image)
+            Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)))
+            if not executable('ffmpeg') or not executable('ffprobe'): raise RuntimeError('FFmpeg отсутствует в сборке')
+            source=folder/'source.mp4'
+            Engine().runner.run([executable('ffmpeg'),'-v','error','-f','lavfi','-i','testsrc2=size=64x64:rate=24','-t','0.5','-c:v','mpeg4','-y',str(source)])
+            Engine().convert(Job([str(source)],'video',Options(format='webm').__dict__,str(folder)))
+        return 0
     root=root_dir();root.mkdir(parents=True,exist_ok=True);logs=root/'logs';logs.mkdir(exist_ok=True)
     handler=RotatingFileHandler(logs/'app.log',maxBytes=10*1024*1024,backupCount=4,encoding='utf-8');logging.basicConfig(level=logging.INFO,handlers=[handler])
     key='COKKERConverter-'+hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]

@@ -422,7 +422,7 @@ class Window(QMainWindow):
             return
         if not self.exiting and self.queue.active:
             if QMessageBox.question(self,'Выход','Отменить активную обработку и выйти?')!=QMessageBox.StandardButton.Yes:event.ignore();return
-        self.save_window();self.queue.shutdown();self.async_.pool.shutdown(wait=False,cancel_futures=True);self.tray.hide();event.accept();QApplication.instance().quit()
+        self.save_window();self.queue.shutdown();self.async_.pool.shutdown(wait=False,cancel_futures=True);self.tray.hide();self.store.close();event.accept();QApplication.instance().quit()
     def changeEvent(self,event):
         if event.type()==event.Type.WindowStateChange and self.isMinimized() and self.store.get('minimize_tray',False) and self.tray.isVisible():QTimer.singleShot(0,self.hide)
         super().changeEvent(event)
