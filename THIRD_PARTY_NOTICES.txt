@@ -1,0 +1,5 @@
+COKKER Converter source code is MIT licensed. It invokes FFmpeg as a separate executable.
+The bundled FFmpeg/ffprobe executable is the FFmpeg 9.0.2 essentials build distributed by Gyan.dev through the Chocolatey ffmpeg package. The build reported --enable-gpl --enable-version3.
+FFmpeg licensing and source code: https://ffmpeg.org/legal.html and https://ffmpeg.org/download.html
+Windows binary build and source information: https://www.gyan.dev/ffmpeg/builds/
+Distribution must retain the bundled FFmpeg license documents and comply with the applicable GPLv3 terms. The application's MIT license does not relicense FFmpeg.

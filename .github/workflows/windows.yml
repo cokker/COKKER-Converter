@@ -32,8 +32,14 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --collect-all pillow_heif --collect-all pypdfium2 main.py
           New-Item -ItemType Directory -Force "dist/COKKER Converter/components"
-          Copy-Item (Get-Command ffmpeg.exe).Source "dist/COKKER Converter/components/ffmpeg.exe"
-          Copy-Item (Get-Command ffprobe.exe).Source "dist/COKKER Converter/components/ffprobe.exe"
+          $ffmpeg = Get-ChildItem "$env:ChocolateyInstall/lib/ffmpeg/tools" -Recurse -File -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpeg) { throw "Real FFmpeg binary missing" }
+          $ffBin = $ffmpeg.Directory.FullName
+          Copy-Item "$ffBin/ffmpeg.exe" "dist/COKKER Converter/components/ffmpeg.exe"
+          Copy-Item "$ffBin/ffprobe.exe" "dist/COKKER Converter/components/ffprobe.exe"
+          $ffRoot = Split-Path $ffBin -Parent
+          Get-ChildItem $ffRoot -File | Where-Object { $_.Name -match '^(LICENSE|COPYING|README)' } | ForEach-Object { Copy-Item $_.FullName "dist/COKKER Converter/components/ffmpeg-$($_.Name)" }
+          Copy-Item THIRD_PARTY_NOTICES.txt "dist/COKKER Converter/components/THIRD_PARTY_NOTICES.txt"
           New-Item -ItemType File "dist/COKKER Converter/portable.flag"
           Copy-Item LICENSE "dist/COKKER Converter/LICENSE-COKKER.txt"
           Compress-Archive -Path "dist/COKKER Converter" -DestinationPath "dist/COKKER-Converter-Portable-x64.zip" -Force
