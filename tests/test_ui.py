@@ -38,4 +38,9 @@ def test_automatic_file_actions_and_brand():
         assert window.operation.currentData()=='image'
         window.files.item(0).setSelected(True);window.remove_inputs()
         assert window.operation.count()>10
+        window.receive_paths([str(video)])
+        video_actions={window.operation.itemData(i) for i in range(window.operation.count())}
+        assert window.operation.currentData()=='video'
+        assert {'video','remux','mute','video_gif','audio'} <= video_actions
+        assert 'image' not in video_actions and 'pdf_merge' not in video_actions
         window.exiting=True;window.close()
