@@ -11,7 +11,10 @@ def executable(name):
     candidates=[base/'components'/f'{name}{suffix}']
     if os.name=='nt':
         pf=Path(os.environ.get('ProgramFiles','C:/Program Files'))
+        local=Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local'))
+        candidates += [local/'Microsoft/WinGet/Links'/f'{name}.exe']
         candidates += [pf/'LibreOffice/program/soffice.exe'] if name=='soffice' else []
+        candidates += [Path(os.environ.get('ProgramFiles(x86)','C:/Program Files (x86)'))/'LibreOffice/program/soffice.exe'] if name=='soffice' else []
         candidates += [pf/'Calibre2/ebook-convert.exe'] if name=='ebook-convert' else []
         candidates += [pf/'7-Zip/7z.exe'] if name=='7z' else []
     return next((str(p) for p in candidates if p.is_file()),shutil.which(name))

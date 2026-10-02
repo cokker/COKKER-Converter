@@ -1,8 +1,8 @@
-import json, os, sys, uuid, time
+import json, os, sys, uuid, time, shutil
 from pathlib import Path
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData, QPropertyAnimation, QEasingCurve, QSize
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData, QPropertyAnimation, QEasingCurve, QSize, QProcess
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QDesktopServices, QPixmap, QIcon, QPainter, QColor
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy)
 from . import __version__
@@ -15,6 +15,8 @@ from .engine import Engine
 from .platform_services import executable,URLS,REPO,startup,latest_release
 from .style import stylesheet
 from .widgets import FileList,Results,CropCanvas,Section,AnimatedButton
+from .media_preview import MediaPreview
+from .media_info import source_info
 
 class Async(QObject):
     result=Signal(object,object)
@@ -61,6 +63,7 @@ class Window(QMainWindow):
         super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async()
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
+        self._source_token=0; self._preset_active=False; self._install_process=None
         QApplication.instance().setProperty('animations',self.store.get('animations',True))
         self.notice_timer.setSingleShot(True);self.notice_timer.timeout.connect(self.notice_timer_done)
         self.build_icon(); self.setWindowIcon(self.icon); self.build(); self.build_tray(); self.apply_theme()
@@ -79,11 +82,12 @@ class Window(QMainWindow):
         self.icon=QIcon(pix) if not pix.isNull() else icon_for('vr')
     def build(self):
         central=QWidget(); self.setCentralWidget(central); root=QHBoxLayout(central); root.setContentsMargins(18,18,18,18); root.setSpacing(22)
-        side=QWidget(); side.setFixedWidth(220); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,0,4);sl.setSpacing(16)
+        side=QWidget(); side.setFixedWidth(228); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,8,4);sl.setSpacing(16)
         branding=QWidget();brand_row=QHBoxLayout(branding);brand_row.setContentsMargins(6,0,6,0);brand_row.setSpacing(10)
         logo=QLabel();logo.setPixmap(self.icon.pixmap(QSize(54,54)));logo.setFixedSize(54,54);brand_row.addWidget(logo)
         brand_row.addWidget(label('COKKER\nConverter','brand'),1);sl.addWidget(branding)
         self.nav=QListWidget(); self.nav.setObjectName('nav')
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav.setIconSize(QSize(22,22))
         for name in ('Главная','Избранное','Очередь','История','Видео','Аудио','Изображения','Документы','PDF','Архивы','Электронные книги','VRChat','Настройки','О программе'):
             self.nav.addItem(QListWidgetItem(icon_for(name),name))
@@ -99,6 +103,11 @@ class Window(QMainWindow):
         drop,dl=card(); dl.addWidget(label('Добавь видео, музыку, изображения или документы','title'))
         dl.addWidget(label('Перетаскивание файлов и папок • Ctrl+V из буфера обмена','subtitle'))
         actions=QHBoxLayout(); actions.addWidget(button('Выбрать файлы',self.choose_files,True)); actions.addWidget(button('Добавить папку',self.choose_folder)); actions.addStretch(); dl.addLayout(actions); self.home_layout.addWidget(drop)
+        quick,quick_layout=card();quick_layout.addWidget(label('Быстрый старт','title'))
+        shortcuts=QHBoxLayout();shortcuts.addWidget(button('PNG → JPG  ★',lambda:self.use_quick('image','jpg')))
+        shortcuts.addWidget(button('Фото → 1920 × 1080  ★',lambda:self.use_quick('image','jpg',1920,1080)))
+        shortcuts.addWidget(button('Все пресеты →',lambda:self.navigate('Избранное')))
+        quick_layout.addLayout(shortcuts);self.home_layout.addWidget(quick)
         self.home_layout.addWidget(self.tools_widget); self.home_layout.addStretch()
         self.editor,self.editor_layout=self.page(); self.build_editor()
         self.queue_page,self.ql=self.page(); self.queue_list=Results(); self.queue_list.setMinimumHeight(350); self.ql.addWidget(self.queue_list,1)
@@ -113,8 +122,11 @@ class Window(QMainWindow):
         scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(content); self.pages.addWidget(scroll); return scroll,layout
     def build_editor(self):
         self.editor_layout.addWidget(label('1  Исходные файлы','subtitle'))
-        self.files=FileList(); self.files.filesDropped.connect(self.add_paths); self.files.itemDoubleClicked.connect(lambda _:self.inspect()); self.editor_layout.addWidget(self.files)
+        self.files=FileList(); self.files.setMaximumHeight(148); self.files.filesDropped.connect(self.add_paths); self.files.itemDoubleClicked.connect(lambda _:self.inspect()); self.files.currentItemChanged.connect(lambda *_:self.update_source()); self.editor_layout.addWidget(self.files)
         self.input_summary=label('Добавь файлы — покажу доступные действия.','subtitle');self.editor_layout.addWidget(self.input_summary)
+        preview_card,preview_layout=card(); preview_layout.addWidget(label('Предпросмотр выбранного файла','title'))
+        self.media_preview=MediaPreview(); preview_layout.addWidget(self.media_preview)
+        self.editor_layout.addWidget(preview_card)
         row=QGridLayout();row.setSpacing(8)
         for i,(text,fn) in enumerate([('Добавить',self.choose_files),('Папка',self.choose_folder),('Удалить выбранные',self.remove_inputs),('Информация',self.inspect),('Preview / Crop',self.preview)]):row.addWidget(button(text,fn),i//2,i%2)
         self.editor_layout.addLayout(row)
@@ -123,11 +135,12 @@ class Window(QMainWindow):
         self.operation.setMinimumContentsLength(17);self.operation.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
         for op in OPERATIONS: self.operation.addItem(icon_for(op.category),op.label,op.id)
         self.operation.currentIndexChanged.connect(self.operation_changed)
-        form.addRow('Действие',self.operation); self.format=QComboBox(); form.addRow('Формат',self.format)
+        self.operation.activated.connect(lambda *_:setattr(self,'_requested_operation',self.operation.currentData()))
+        form.addRow('Действие',self.operation); self.format=QComboBox(); self.format.currentTextChanged.connect(self.update_visible_options);form.addRow('Формат',self.format)
         self.quality=combo(['Сбалансированное','Высокое качество','Максимальное сжатие']); form.addRow('Качество',self.quality)
         self.resolution=combo(['Оригинальное','3840 × 2160','2560 × 1440','1920 × 1080','1280 × 720','1080 × 1920','1080 × 1080','512 × 512'])
-        form.addRow('Разрешение',self.resolution); bl.addLayout(form); self.editor_layout.addWidget(basic)
-        advanced=QWidget(); af=QFormLayout(advanced); af.setSpacing(10)
+        form.addRow('Разрешение',self.resolution); self.basic_form=form;bl.addLayout(form); self.editor_layout.addWidget(basic)
+        advanced=QWidget(); af=QFormLayout(advanced); af.setSpacing(10); self.advanced_form=af
         def add(key,text,w): self.controls[key]=w; af.addRow(text,w)
         add('width','Ширина (0 = авто)',spin(0,16384)); add('height','Высота (0 = авто)',spin(0,16384))
         add('scale_mode','Размер: вписать / заполнить / растянуть',combo(['fit','fill','stretch']))
@@ -145,18 +158,29 @@ class Window(QMainWindow):
         add('emoji_frames','VRChat: число кадров',combo(['4','16','64'])); self.controls['emoji_frames'].setCurrentText('64')
         add('pages','PDF: страницы (1,3,5-8); пусто = все',QLineEdit())
         self.advanced=Section('Дополнительные настройки',advanced,lambda:self.store.get('animations',True)); self.editor_layout.addWidget(self.advanced)
+        self.set_option_help()
+        self.preview_timer=QTimer(self);self.preview_timer.setSingleShot(True);self.preview_timer.timeout.connect(self.refresh_image_preview)
+        for key in ('width','height','scale_mode','no_upscale','crop','rotate','flip'):
+            w=self.controls[key]
+            if isinstance(w,QCheckBox):w.toggled.connect(lambda *_:self.preview_timer.start(180))
+            elif isinstance(w,QComboBox):w.currentTextChanged.connect(lambda *_:self.preview_timer.start(180))
+            elif isinstance(w,QLineEdit):w.textChanged.connect(lambda *_:self.preview_timer.start(180))
+            else:w.valueChanged.connect(lambda *_:self.preview_timer.start(180))
         self.extra_file=QLineEdit(); self.extra_file.setPlaceholderText('Аудио или субтитры для выбранной операции')
         row=QHBoxLayout(); row.addWidget(self.extra_file,1); row.addWidget(button('Выбрать дорожку',self.choose_extra)); self.extra_row=QWidget(); self.extra_row.setLayout(row); self.editor_layout.addWidget(self.extra_row)
         self.hint=label('','subtitle'); self.editor_layout.addWidget(self.hint)
         bottom,bl=card(); row=QHBoxLayout(); self.output=QLineEdit(self.store.get('output',str(Path.home()/'Videos'/'COKKER'))); row.addWidget(self.output,1); row.addWidget(button('Папка результата',self.choose_output)); bl.addLayout(row)
         row=QGridLayout();row.setSpacing(8)
         row.addWidget(button('Сохранить пресет',self.save_preset),0,0)
-        row.addWidget(button('Сбросить параметры',self.reset_options),0,1)
-        row.addWidget(button('Добавить в очередь   Ctrl+Enter',self.enqueue,True),1,0,1,2)
+        row.addWidget(button('★  В избранное',self.add_favorite),0,1)
+        row.addWidget(button('Сбросить параметры',self.reset_options),1,0,1,2)
+        row.addWidget(button('Добавить в очередь   Ctrl+Enter',self.enqueue,True),2,0,1,2)
         bl.addLayout(row); self.editor_layout.addWidget(bottom); self.editor_layout.addStretch(); self.operation_changed()
     def operation_changed(self):
         if not hasattr(self,'format') or not hasattr(self,'extra_row'): return
-        op=REGISTRY[self.operation.currentData()]; self.format.clear(); self.format.addItems(op.formats)
+        op=REGISTRY[self.operation.currentData()];previous=self.format.currentText()
+        self.format.clear(); self.format.addItems(op.formats)
+        if previous in op.formats:self.format.setCurrentText(previous)
         self.extra_row.setVisible(op.id in ('replace_audio','add_subtitle','burn_subtitle'))
         hints={'remux':'Дорожки копируются без перекодирования. Обрезка может начинаться у ближайшего ключевого кадра. Несовместимые кодеки дадут ошибку.',
             'merge_video':'Порядок можно менять перетаскиванием. Все видео должны иметь одинаковые кодеки и параметры.',
@@ -171,14 +195,77 @@ class Window(QMainWindow):
             'archive':'Файлы сохраняются в корне архива. Одинаковые имена получают числовые суффиксы.',
             'extract':'ZIP и TAR. Ссылки и пути вне целевой папки отклоняются.'}
         self.hint.setText(hints.get(op.id,'Оригиналы сохраняются. Новые файлы появятся в выбранной папке.'))
-    def reset_options(self): self.apply_options(asdict(Options(format=self.format.currentText())))
+        self.update_visible_options()
+    def set_option_help(self):
+        help_text={
+            'width':'Ширина исходного кадра подставляется автоматически. Измените значение для результата; 0 отключает ограничение.',
+            'height':'Высота исходного кадра подставляется автоматически. Измените значение для результата; 0 отключает ограничение.',
+            'scale_mode':'fit сохраняет пропорции, fill обрезает лишнее, stretch растягивает изображение.',
+            'no_upscale':'Если включено, маленькое изображение не будет увеличено до выбранного размера.',
+            'start':'Начальная позиция видео или аудио в секундах. 0 означает начало файла.',
+            'end':'Конечная позиция в секундах. 0 означает до конца файла.',
+            'crop':'Координаты и размер области исходного изображения: X,Y,ширина,высота. Выделить область можно кнопкой Preview / Crop.',
+            'rotate':'Повернуть изображение или видеокадры на выбранный угол.',
+            'flip':'Отразить кадр по горизонтали или вертикали.',
+            'fps':'Кадров в секунду в выходном видео или GIF. 0 сохраняет исходную частоту (для GIF по умолчанию 15).',
+            'speed':'Скорость воспроизведения: 1× без изменений, 2× вдвое быстрее.',
+            'codec':'Способ кодирования выходного видео. auto выбирает кодек по формату.',
+            'hardware':'CPU работает на любом компьютере; GPU использует аппаратный кодировщик при его наличии.',
+            'target_mb':'Приблизительный предельный размер результата в мегабайтах. 0 означает без лимита.',
+            'audio_bitrate':'Битрейт выходного звука в килобитах в секунду: больше значит качественнее и крупнее файл.',
+            'sample_rate':'Частота дискретизации выходного звука в герцах. 0 означает оставить частоту исходного файла.',
+            'channels':'Количество звуковых каналов: 1 — моно, 2 — стерео, 0 — как в исходном файле.',
+            'normalize':'Выравнивает воспринимаемую громкость аудио.',
+            'volume':'1× оставляет громкость, 0.5× делает тише, 2× громче.',
+            'strip_metadata':'Убрать служебные теги и данные камеры, если этот формат поддерживает удаление.',
+            'frame_ms':'Сколько миллисекунд показывать каждый кадр GIF.',
+            'frame_delays':'Длительности отдельных кадров GIF через запятую, например 100,200,100.',
+            'loop':'Число повторов GIF. 0 означает бесконечное повторение.',
+            'emoji_frames':'Сколько кадров уместить на квадратный лист 1024×1024 для Animated Emoji VRChat: 4, 16 или 64. Большее число даёт плавнее движение и меньший размер каждого кадра.',
+            'pages':'Номера страниц PDF в нужном порядке, например 1,3,5-8. Пустое поле означает все страницы.'}
+        for key,w in self.controls.items():
+            w.setToolTip(help_text[key]);self.advanced_form.labelForField(w).setToolTip(help_text[key])
+        self.quality.setToolTip('Качество сжатия для изображений или перекодированного видео.')
+        self.resolution.setToolTip('Готовый размер результата. «Оригинальное» использует значения из дополнительных настроек.')
+    def update_visible_options(self, *_):
+        if not hasattr(self,'advanced_form') or not hasattr(self,'extra_row'): return
+        op=self.operation.currentData(); fmt=self.format.currentText()
+        image={'width','height','scale_mode','no_upscale','crop','rotate','flip','strip_metadata','target_mb'}
+        video={'width','height','scale_mode','no_upscale','start','end','crop','rotate','flip','fps','speed','codec','hardware','target_mb','audio_bitrate','sample_rate','channels','normalize','volume','strip_metadata'}
+        audio={'start','end','speed','audio_bitrate','sample_rate','channels','normalize','volume','strip_metadata'}
+        visible={
+            'image':image, 'images_pdf':image-{'strip_metadata','target_mb'},
+            'images_gif':image-{'strip_metadata','target_mb'}|{'frame_ms','frame_delays','loop'},
+            'video':video, 'burn_subtitle':video,
+            'video_gif':video-{'codec','hardware','target_mb','audio_bitrate','sample_rate','channels','normalize','volume','strip_metadata'}|{'loop'},
+            'emoji':{'start','end','crop','rotate','flip','emoji_frames'},
+            'audio':audio, 'merge_audio':audio-{'start','end'},
+            'replace_audio':{'start','end','audio_bitrate','strip_metadata'},
+            'pdf_pages':{'pages','rotate','strip_metadata'}, 'pdf_compress':{'strip_metadata'},
+            'remux':{'start','end','strip_metadata'}, 'merge_video':{'strip_metadata'},
+            'mute':{'start','end','strip_metadata'},'add_subtitle':{'start','end','strip_metadata'},
+            'remove_subtitle':{'start','end','strip_metadata'},'extract_subtitle':{'start','end'},
+        }.get(op,set())
+        if op=='image' and fmt not in ('jpg','webp','avif'):visible=visible-{'target_mb'}
+        self._visible_options=visible
+        for key,w in self.controls.items():
+            w.setVisible(key in visible); self.advanced_form.labelForField(w).setVisible(key in visible)
+        self.advanced.setVisible(bool(visible))
+        quality_visible=op in ('image','video','burn_subtitle') and fmt not in ('png','bmp','tiff','ico')
+        self.quality.setVisible(quality_visible);self.basic_form.labelForField(self.quality).setVisible(quality_visible)
+        resolution_visible=op in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif')
+        self.resolution.setVisible(resolution_visible);self.basic_form.labelForField(self.resolution).setVisible(resolution_visible)
+    def reset_options(self):
+        self._preset_active=False;self.apply_options(asdict(Options(format=self.format.currentText())))
+        self.update_source(force=True)
     def options(self):
         o=Options(format=self.format.currentText(),quality=[82,95,55][self.quality.currentIndex()],extra_file=self.extra_file.text())
         for k,w in self.controls.items():
+            if k not in self._visible_options: continue
             val=w.isChecked() if isinstance(w,QCheckBox) else w.value() if isinstance(w,(QSpinBox,QDoubleSpinBox)) else w.currentText() if isinstance(w,QComboBox) else w.text()
             if k in ('rotate','emoji_frames'): val=int(val)
             setattr(o,k,val)
-        if self.resolution.currentIndex():
+        if self.resolution.currentIndex() and self.operation.currentData() in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif'):
             o.width,o.height=map(int,self.resolution.currentText().split(' × '))
         o.validate(); return o
     def apply_options(self,data):
@@ -214,16 +301,79 @@ class Window(QMainWindow):
             if p not in existing:
                 item=QListWidgetItem(Path(p).name); item.setToolTip(p); item.setData(Qt.ItemDataRole.UserRole,p); self.files.addItem(item)
         self.refresh_compatible()
+        if self.files.count() and not self.files.currentItem():self.files.setCurrentRow(0);self.files.clearSelection()
+        elif self.files.currentItem():self.update_source(force=True)
         self.show_page(self.editor); self.heading.setText('Подготовка файлов')
         if result:self.toast(f'Добавлено: {len(result)}. Подходящие действия выбраны автоматически.')
     def input_paths(self): return [self.files.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.files.count())]
     def remove_inputs(self):
         for item in self.files.selectedItems(): self.files.takeItem(self.files.row(item))
         self.refresh_compatible()
+        self.update_source(force=True)
+    def update_source(self,force=False):
+        if not hasattr(self,'media_preview'):return
+        item=self.files.currentItem()
+        path=item.data(Qt.ItemDataRole.UserRole) if item else (self.input_paths()[0] if self.input_paths() else None)
+        if not force and path==getattr(self,'_source_path',None):return
+        self._source_path=path;self._source_token+=1;token=self._source_token
+        self.media_preview.set_file(path)
+        if not path:return
+        self.media_preview.details.setText('Читаю параметры файла…')
+        def done(info):
+            if token!=self._source_token:return
+            if isinstance(info,Exception):
+                self.media_preview.details.setText(f'{Path(path).name} • параметры недоступны: {info}');return
+            bits=[Path(path).name,size(info['bytes'])]
+            if info.get('width'):bits.append(f"{info['width']} × {info['height']}")
+            if info.get('frames',1)>1:bits.append(f"{info['frames']} кадр(ов)")
+            if info.get('duration'):bits.append(f"{info['duration']:.1f} с")
+            if info.get('fps'):bits.append(f"{info['fps']:g} FPS")
+            if info.get('sample_rate'):bits.append(f"{info['sample_rate']} Гц")
+            if info.get('channels'):bits.append(f"{info['channels']} канал(а)")
+            if info.get('pages'):bits.append(f"{info['pages']} стр.")
+            self.media_preview.details.setText('  •  '.join(bits))
+            if not self._preset_active:
+                for key in ('width','height','fps','sample_rate','channels','frame_ms'):
+                    if info.get(key) is not None and key in self.controls:
+                        self.controls[key].setValue(info[key])
+            self.preview_timer.start(180)
+        self.async_.run(lambda:source_info(path),done)
+    def refresh_image_preview(self):
+        path=getattr(self,'_source_path',None)
+        if not path or file_kind(path)!='image' or Path(path).suffix.lower()=='.gif':return
+        if self.operation.currentData() not in ('image','images_pdf','images_gif'):
+            self.media_preview.show_pixmap(QPixmap(path));return
+        try:
+            from PIL import Image, ImageOps
+            from io import BytesIO
+            with Image.open(path) as source:
+                image=source.convert('RGBA')
+                crop=self.controls['crop'].text().strip()
+                if crop:
+                    x,y,w,h=[int(v.strip()) for v in crop.split(',')]
+                    if w>0 and h>0:image=image.crop((x,y,x+w,y+h))
+                angle=int(self.controls['rotate'].currentText())
+                if angle:image=image.rotate(-angle,expand=True)
+                flip=self.controls['flip'].currentText()
+                if flip=='horizontal':image=ImageOps.mirror(image)
+                elif flip=='vertical':image=ImageOps.flip(image)
+                width=self.controls['width'].value();height=self.controls['height'].value()
+                if width or height:
+                    width=width or round(image.width*height/image.height)
+                    height=height or round(image.height*width/image.width)
+                    if self.controls['no_upscale'].isChecked():width=min(width,image.width);height=min(height,image.height)
+                    mode=self.controls['scale_mode'].currentText()
+                    if mode=='fit':image.thumbnail((width,height))
+                    elif mode=='fill':image=ImageOps.fit(image,(width,height))
+                    else:image=image.resize((width,height))
+                image.thumbnail((1100,700)); data=BytesIO();image.save(data,'PNG')
+            pix=QPixmap();pix.loadFromData(data.getvalue());self.media_preview.show_pixmap(pix)
+        except (ValueError,OSError,ZeroDivisionError):pass # Keep the last valid frame while the crop field is being typed.
     def refresh_compatible(self):
         paths=self.input_paths();allowed=compatible_operations(paths)
         signature=tuple(sorted({file_kind(path) for path in paths}))
-        preferred=self.operation.currentData() if signature==getattr(self,'_detected_signature',None) else allowed[0].id
+        requested=getattr(self,'_requested_operation',None)
+        preferred=requested if requested in {op.id for op in allowed} else self.operation.currentData() if signature==getattr(self,'_detected_signature',None) else allowed[0].id
         self._detected_signature=signature
         if preferred not in {op.id for op in allowed}:preferred=allowed[0].id
         self.operation.blockSignals(True);self.operation.clear()
@@ -258,7 +408,7 @@ class Window(QMainWindow):
         index=self.operation.findData(id)
         if index<0:
             self.toast('Это действие не подходит для загруженных файлов. Удалите их или выберите доступное действие.');return
-        self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
+        self._requested_operation=id;self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
         self.select_section(REGISTRY[id].category)
     def select_section(self,name):
         for row in range(self.nav.count()):
@@ -367,8 +517,26 @@ class Window(QMainWindow):
             if ok and name:
                 items=self.presets.all(); items.append({'schemaVersion':1,'presetName':name,'category':REGISTRY[self.operation.currentData()].category,'operation':self.operation.currentData(),'parameters':data}); self.presets.save(items); self.toast('Пресет сохранён в Избранном.')
         except Exception as e:self.error(e)
+    def use_quick(self,operation,fmt,width=0,height=0):
+        self._requested_operation=operation;self.set_operation(operation)
+        self.apply_options(asdict(Options(format=fmt,width=width,height=height)))
+        self._preset_active=bool(width or height)
+        if not self._preset_active and self.input_paths():self.update_source(force=True)
+        self.toast('Действие готово. Перетащите файл в окно или нажмите «Добавить».')
+    def add_favorite(self):
+        try:
+            op=REGISTRY[self.operation.currentData()]
+            data=asdict(self.options());data.pop('extra_file')
+            name=f'{op.label} → {data["format"]}'
+            if data['width'] and data['height']:name+=f' • {data["width"]} × {data["height"]}'
+            items=self.presets.all();items.append({'schemaVersion':1,'presetName':name,'category':op.category,'operation':op.id,'parameters':data})
+            self.presets.save(items);self.toast('Добавлено в Избранное. Выберите действие там одним кликом.')
+        except Exception as e:self.error(e)
     def show_presets(self):
-        self.clear_extra(); self.extra_layout.addWidget(label('Сохраняй операции целиком и переноси их через JSON. Порядок можно менять перетаскиванием.','subtitle'))
+        self.clear_extra(); self.extra_layout.addWidget(label('Нажмите на действие, затем перетащите файл в окно. Свои настройки добавляйте кнопкой ★ в редакторе.','subtitle'))
+        quick=QHBoxLayout();quick.addWidget(button('PNG → JPG',lambda:self.use_quick('image','jpg')))
+        quick.addWidget(button('Размер 1920 × 1080',lambda:self.use_quick('image','jpg',1920,1080)))
+        self.extra_layout.addLayout(quick)
         listing=QListWidget(); listing.setDragDropMode(QListWidget.DragDropMode.InternalMove); listing.setMinimumHeight(300)
         for p in self.presets.all():
             item=QListWidgetItem('★  '+p['presetName']); item.setData(Qt.ItemDataRole.UserRole,p); listing.addItem(item)
@@ -376,7 +544,9 @@ class Window(QMainWindow):
         listing.model().rowsMoved.connect(lambda *args:persist())
         def use():
             if listing.currentItem():
-                p=listing.currentItem().data(Qt.ItemDataRole.UserRole); self.set_operation(p['operation']); self.apply_options(p['parameters'])
+                p=listing.currentItem().data(Qt.ItemDataRole.UserRole)
+                self._requested_operation=p['operation'];self.set_operation(p['operation']);self.apply_options(p['parameters'])
+                self._preset_active=True;self.toast('Пресет готов. Добавьте файлы или нажмите Ctrl+Enter.')
         def delete():
             if listing.currentRow()>=0:listing.takeItem(listing.currentRow());persist()
         def duplicate():
@@ -392,6 +562,7 @@ class Window(QMainWindow):
             if path:
                 try:self.presets.import_file(path);self.show_presets()
                 except Exception as e:self.error(e)
+        listing.itemClicked.connect(lambda *_:use())
         self.extra_layout.addWidget(listing);row=QWidget();rl=QHBoxLayout(row)
         for text,fn in [('Применить / изменить',use),('Дублировать',duplicate),('Удалить',delete),('Экспорт JSON',export),('Импорт JSON',import_)]:rl.addWidget(button(text,fn))
         self.extra_layout.addWidget(row);self.extra_layout.addStretch()
@@ -411,14 +582,48 @@ class Window(QMainWindow):
             except Exception as e:
                 auto.blockSignals(True);auto.setChecked(self.store.get('autostart',False));auto.blockSignals(False);self.error(e)
         auto.toggled.connect(save_startup);tray.toggled.connect(save_startup);bl.addWidget(auto);bl.addWidget(tray);self.extra_layout.addWidget(box)
-        box,bl=card();bl.addWidget(label('Компоненты','title'));bl.addWidget(label('FFmpeg и ffprobe можно положить в папку components рядом с EXE. LibreOffice и Calibre обнаруживаются после установки.','subtitle'))
-        for name in ('ffmpeg','ffprobe','soffice','ebook-convert'):
-            p=executable(name);row=QHBoxLayout();row.addWidget(label(name+'  —  '+('найден' if p else 'не установлен')),1)
+        box,bl=card();bl.addWidget(label('Компоненты','title'))
+        bl.addWidget(label('Нажмите «Установить»: Windows загрузит компонент через WinGet. Может потребоваться подтверждение Windows. FFmpeg содержит также ffprobe.','subtitle'))
+        for name,title,package in [('ffmpeg','FFmpeg + ffprobe','Gyan.FFmpeg'),('soffice','LibreOffice (soffice)','TheDocumentFoundation.LibreOffice'),('ebook-convert','Calibre (ebook-convert)','calibre.calibre')]:
+            p=executable(name);row=QHBoxLayout();row.addWidget(label(title+'  —  '+('найден' if p else 'не установлен')),1)
             if p: row.addWidget(label(p,'subtitle'))
-            else:row.addWidget(button('Официальный сайт',lambda n=name:QDesktopServices.openUrl(QUrl(URLS.get(n,URLS['ffmpeg'])))))
+            elif os.name=='nt' and shutil.which('winget'):
+                install=button('Установить',lambda n=name,t=title,pkg=package:self.install_component(n,t,pkg))
+                install.setEnabled(self._install_process is None);row.addWidget(install)
+            else:row.addWidget(button('Сайт загрузки',lambda n=name:QDesktopServices.openUrl(QUrl(URLS.get(n,URLS['ffmpeg'])))))
             bl.addLayout(row)
+        if not shutil.which('winget') and os.name=='nt':bl.addWidget(label('WinGet не найден. Установите «Установщик приложений» Windows или используйте сайт компонента.','subtitle'))
+        if self._install_process:bl.addWidget(label('Идёт установка: '+self._install_name,'subtitle'))
+        elif getattr(self,'_install_status',''):bl.addWidget(label(self._install_status,'subtitle'))
         self.extra_layout.addWidget(box)
         self.extra_layout.addWidget(button('Проверить обновления GitHub',self.check_update));self.extra_layout.addWidget(label('Обычные пользовательские файлы обрабатываются локально на компьютере. Приложение не отправляет их на серверы. Обновления проверяются только по нажатию кнопки.','subtitle'));self.extra_layout.addStretch()
+    def install_component(self,name,title,package):
+        if self._install_process:return
+        binary=shutil.which('winget')
+        if os.name!='nt' or not binary:self.toast('Для установки нужен WinGet в Windows.');return
+        self._install_name=title;self._install_status='';process=QProcess(self)
+        self._install_process=process
+        process.setProgram(binary)
+        process.setArguments(['install','--id',package,'--exact','--source','winget','--accept-source-agreements','--accept-package-agreements','--disable-interactivity'])
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        output=[]
+        def collect():
+            data=bytes(process.readAllStandardOutput()).decode('utf-8','replace')
+            if data:output.append(data[-3000:]);output[:]=output[-12:]
+        process.readyReadStandardOutput.connect(collect)
+        def finish(code,status):
+            collect();self._install_process=None;process.deleteLater()
+            found=executable(name)
+            if code==0 and found:self._install_status=f'{title} установлен и обнаружен: {found}'
+            elif code==0:self._install_status=f'{title} установлен. Перезапустите приложение, чтобы обновился системный PATH.'
+            else:
+                detail=''.join(output).strip().splitlines()
+                self._install_status=f'Не удалось установить {title} (код {code}). '+(detail[-1][:180] if detail else 'Проверьте подключение и права Windows.')
+            if self.current=='Настройки':self.show_settings()
+            self.toast(self._install_status)
+        process.finished.connect(finish)
+        process.errorOccurred.connect(lambda error:self.toast('Не удалось запустить WinGet: '+process.errorString()))
+        process.start();self.show_settings()
     def show_about(self):
         self.clear_extra();self.extra_layout.addWidget(label('COKKER Converter  '+__version__,'title'));self.extra_layout.addWidget(label('Локальная обработка видео, аудио, изображений и документов.\nПредварительная версия: проверяйте результат перед удалением исходников.'))
         self.extra_layout.addWidget(button('GitHub',lambda:QDesktopServices.openUrl(QUrl(REPO))));self.extra_layout.addWidget(button('VRChat: открыть сайт для загрузки Emoji',lambda:QDesktopServices.openUrl(QUrl('https://vrchat.com/home'))));self.extra_layout.addStretch()

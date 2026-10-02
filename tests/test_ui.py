@@ -44,3 +44,29 @@ def test_automatic_file_actions_and_brand():
         assert {'video','remux','mute','video_gif','audio'} <= video_actions
         assert 'image' not in video_actions and 'pdf_merge' not in video_actions
         window.exiting=True;window.close()
+
+def test_source_metadata_visible_options_and_quick_favorite():
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);picture=root/'scene.png';Image.new('RGB',(320,180),'orange').save(picture)
+        window=Window(Store(root/'settings'))
+        window.use_quick('image','jpg')
+        window.receive_paths([str(picture)])
+        for _ in range(100):
+            app.processEvents()
+            if window.controls['width'].value()==320:break
+            import time;time.sleep(.01)
+        assert window.controls['width'].value()==320
+        assert window.controls['height'].value()==180
+        assert window.format.currentText()=='jpg'
+        assert window.media_preview.path==str(picture)
+        assert '320 × 180' in window.media_preview.details.text()
+        assert 'fps' not in window._visible_options
+        assert 'sample_rate' not in window._visible_options
+        assert 'fps' in window.controls['fps'].toolTip().lower() or 'Кадров' in window.controls['fps'].toolTip()
+        window.controls['width'].setValue(160)
+        window.add_favorite()
+        saved=window.presets.all();assert saved[-1]['parameters']['width']==160
+        window.navigate('Избранное')
+        assert window.pages.currentWidget() is window.extra
+        window.exiting=True;window.close()

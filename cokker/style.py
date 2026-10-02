@@ -27,8 +27,8 @@ def stylesheet(theme='dark'):
     QListWidget {{background:{panel};border:1px solid {border};border-radius:12px;padding:8px;outline:0;}}
     QListWidget::item {{padding:11px;border-radius:9px;}}
     QListWidget::item:selected {{background:{selected};color:{fg};}}
-    QListWidget#nav {{background:transparent;border:0;padding:0;}}
-    QListWidget#nav::item {{padding:9px 12px;margin:2px 0;border-radius:10px;}}
+    QListWidget#nav {{background:transparent;border:0;padding:0 7px 0 0;}}
+    QListWidget#nav::item {{padding:9px 12px;margin:2px 10px 2px 0;border-radius:10px;}}
     QListWidget#nav::item:hover {{background:{hover};}}
     QListWidget#nav::item:selected {{background:{selected};color:{fg};font-weight:600;}}
     QScrollArea {{border:0;background:transparent;}}
