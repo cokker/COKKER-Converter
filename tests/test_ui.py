@@ -1,4 +1,4 @@
-import os,tempfile
+import os,tempfile,subprocess,time
 from pathlib import Path
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from PySide6.QtWidgets import QApplication
@@ -60,13 +60,38 @@ def test_source_metadata_visible_options_and_quick_favorite():
         assert window.controls['height'].value()==180
         assert window.format.currentText()=='jpg'
         assert window.media_preview.path==str(picture)
+        assert window.media_preview.view.currentWidget() is window.media_preview.comparison
         assert '320 × 180' in window.media_preview.details.text()
         assert 'fps' not in window._visible_options
         assert 'sample_rate' not in window._visible_options
         assert 'fps' in window.controls['fps'].toolTip().lower() or 'Кадров' in window.controls['fps'].toolTip()
         window.controls['width'].setValue(160)
+        assert window.controls['height'].value()==90
+        window.resolution.setCurrentText('512 × 512')
+        assert (window.controls['width'].value(),window.controls['height'].value())==(512,512)
+        window.controls['width'].setValue(160)
+        assert window.options().width==160
         window.add_favorite()
         saved=window.presets.all();assert saved[-1]['parameters']['width']==160
         window.navigate('Избранное')
         assert window.pages.currentWidget() is window.extra
+        window.exiting=True;window.close()
+
+def test_video_frame_comparison_uses_current_settings():
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);video=root/'clip.mp4'
+        subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=orange:s=160x120:r=10',
+                        '-t','1','-c:v','mpeg4','-y',str(video)],check=True)
+        window=Window(Store(root/'settings'));window.receive_paths([str(video)])
+        for _ in range(100):
+            app.processEvents();time.sleep(.01)
+            if window.controls['width'].value()==160:break
+        window.controls['width'].setValue(80)
+        window.compare_video_frame()
+        for _ in range(150):
+            app.processEvents();time.sleep(.01)
+            if not window.media_preview.comparison.after.isNull():break
+        assert window.media_preview.comparison.before.width()==160
+        assert window.media_preview.comparison.after.width()==80
         window.exiting=True;window.close()

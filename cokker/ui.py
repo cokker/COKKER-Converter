@@ -1,10 +1,10 @@
-import json, os, sys, uuid, time, shutil
+import json, os, sys, uuid, time, shutil, subprocess, threading, tempfile
 from pathlib import Path
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData, QPropertyAnimation, QEasingCurve, QSize, QProcess
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QDesktopServices, QPixmap, QIcon, QPainter, QColor
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QPlainTextEdit,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy)
 from . import __version__
 from .models import Options,Job
 from .registry import OPERATIONS,REGISTRY,category,compatible_operations,file_kind
@@ -12,7 +12,8 @@ from .icons import icon_for
 from .storage import Store,Presets
 from .queue import Queue
 from .engine import Engine
-from .platform_services import executable,URLS,REPO,startup,latest_release
+from .platform_services import executable,URLS,REPO,startup
+from .updater import check_release,download,prepare_portable
 from .style import stylesheet
 from .widgets import FileList,Results,CropCanvas,Section,AnimatedButton
 from .media_preview import MediaPreview
@@ -48,7 +49,8 @@ def combo(items):
     w=QComboBox(); w.addItems(items); w.setFocusPolicy(Qt.FocusPolicy.StrongFocus); return w
 
 def card():
-    w=QFrame(); w.setObjectName('card'); l=QVBoxLayout(w); l.setSpacing(12); return w,l
+    w=QFrame(); w.setObjectName('card'); w.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Minimum)
+    l=QVBoxLayout(w); l.setSpacing(12); return w,l
 
 STATUS={'waiting':'Ожидает','running':'Обработка','interrupted':'Прервано — восстановить?','done':'Готово','cancelled':'Отменено','failed':'Ошибка'}
 
@@ -59,11 +61,17 @@ def size(n):
     return f'{n:.1f} ПБ'
 
 class Window(QMainWindow):
+    update_progress=Signal(int)
     def __init__(self,store=None):
         super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async()
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
         self._source_token=0; self._preset_active=False; self._install_process=None
+        self._source_ratio=None;self._syncing_dimensions=False
+        self._install_output='';self._install_cancelled=False
+        self._release=None;self._update_checked=False;self._update_busy=False;self._update_status='Проверка ещё не выполнялась.'
+        self._update_cancel=threading.Event();self._update_percent=0
+        self.update_progress.connect(self.on_update_progress)
         QApplication.instance().setProperty('animations',self.store.get('animations',True))
         self.notice_timer.setSingleShot(True);self.notice_timer.timeout.connect(self.notice_timer_done)
         self.build_icon(); self.setWindowIcon(self.icon); self.build(); self.build_tray(); self.apply_theme()
@@ -82,7 +90,7 @@ class Window(QMainWindow):
         self.icon=QIcon(pix) if not pix.isNull() else icon_for('vr')
     def build(self):
         central=QWidget(); self.setCentralWidget(central); root=QHBoxLayout(central); root.setContentsMargins(18,18,18,18); root.setSpacing(22)
-        side=QWidget(); side.setFixedWidth(228); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,8,4);sl.setSpacing(16)
+        side=QWidget(); side.setFixedWidth(248); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,8,4);sl.setSpacing(16)
         branding=QWidget();brand_row=QHBoxLayout(branding);brand_row.setContentsMargins(6,0,6,0);brand_row.setSpacing(10)
         logo=QLabel();logo.setPixmap(self.icon.pixmap(QSize(54,54)));logo.setFixedSize(54,54);brand_row.addWidget(logo)
         brand_row.addWidget(label('COKKER\nConverter','brand'),1);sl.addWidget(branding)
@@ -119,6 +127,7 @@ class Window(QMainWindow):
         self.rebuild_tools()
     def page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(4,6,12,18); layout.setSpacing(16)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(content); self.pages.addWidget(scroll); return scroll,layout
     def build_editor(self):
         self.editor_layout.addWidget(label('1  Исходные файлы','subtitle'))
@@ -127,6 +136,8 @@ class Window(QMainWindow):
         preview_card,preview_layout=card(); preview_layout.addWidget(label('Предпросмотр выбранного файла','title'))
         self.media_preview=MediaPreview(); preview_layout.addWidget(self.media_preview)
         self.editor_layout.addWidget(preview_card)
+        self.compare_video_button=button('Сравнить текущий кадр до / после',self.compare_video_frame)
+        self.editor_layout.addWidget(self.compare_video_button)
         row=QGridLayout();row.setSpacing(8)
         for i,(text,fn) in enumerate([('Добавить',self.choose_files),('Папка',self.choose_folder),('Удалить выбранные',self.remove_inputs),('Информация',self.inspect),('Preview / Crop',self.preview)]):row.addWidget(button(text,fn),i//2,i%2)
         self.editor_layout.addLayout(row)
@@ -139,10 +150,16 @@ class Window(QMainWindow):
         form.addRow('Действие',self.operation); self.format=QComboBox(); self.format.currentTextChanged.connect(self.update_visible_options);form.addRow('Формат',self.format)
         self.quality=combo(['Сбалансированное','Высокое качество','Максимальное сжатие']); form.addRow('Качество',self.quality)
         self.resolution=combo(['Оригинальное','3840 × 2160','2560 × 1440','1920 × 1080','1280 × 720','1080 × 1920','1080 × 1080','512 × 512'])
-        form.addRow('Разрешение',self.resolution); self.basic_form=form;bl.addLayout(form); self.editor_layout.addWidget(basic)
+        form.addRow('Готовый размер',self.resolution); self.basic_form=form;bl.addLayout(form); self.editor_layout.addWidget(basic)
         advanced=QWidget(); af=QFormLayout(advanced); af.setSpacing(10); self.advanced_form=af
         def add(key,text,w): self.controls[key]=w; af.addRow(text,w)
         add('width','Ширина (0 = авто)',spin(0,16384)); add('height','Высота (0 = авто)',spin(0,16384))
+        self.lock_ratio=QCheckBox('Сохранять пропорции исходника');self.lock_ratio.setChecked(True)
+        self.lock_ratio.setToolTip('При изменении ширины автоматически пересчитывает высоту, и наоборот.')
+        af.addRow('',self.lock_ratio)
+        self.controls['width'].valueChanged.connect(lambda value:self.dimension_changed('width',value))
+        self.controls['height'].valueChanged.connect(lambda value:self.dimension_changed('height',value))
+        self.resolution.currentIndexChanged.connect(self.choose_resolution)
         add('scale_mode','Размер: вписать / заполнить / растянуть',combo(['fit','fill','stretch']))
         add('no_upscale','Не увеличивать исходник',QCheckBox()); self.controls['no_upscale'].setChecked(True)
         add('start','Начало, секунд',spin(0,999999,0,True)); add('end','Конец, секунд (0 = до конца)',spin(0,999999,0,True))
@@ -174,7 +191,8 @@ class Window(QMainWindow):
         row.addWidget(button('Сохранить пресет',self.save_preset),0,0)
         row.addWidget(button('★  В избранное',self.add_favorite),0,1)
         row.addWidget(button('Сбросить параметры',self.reset_options),1,0,1,2)
-        row.addWidget(button('Добавить в очередь   Ctrl+Enter',self.enqueue,True),2,0,1,2)
+        self.enqueue_button=button('Добавить в очередь   Ctrl+Enter',self.enqueue,True)
+        row.addWidget(self.enqueue_button,2,0,1,2)
         bl.addLayout(row); self.editor_layout.addWidget(bottom); self.editor_layout.addStretch(); self.operation_changed()
     def operation_changed(self):
         if not hasattr(self,'format') or not hasattr(self,'extra_row'): return
@@ -196,6 +214,10 @@ class Window(QMainWindow):
             'extract':'ZIP и TAR. Ссылки и пути вне целевой папки отклоняются.'}
         self.hint.setText(hints.get(op.id,'Оригиналы сохраняются. Новые файлы появятся в выбранной папке.'))
         self.update_visible_options()
+        self.compare_video_button.setVisible(op.id in ('video','burn_subtitle','video_gif'))
+        if hasattr(self,'enqueue_button') and self.files.count():
+            count=1 if op.multiple else self.files.count()
+            self.enqueue_button.setText(f'Добавить в очередь: {count} задач(и)   Ctrl+Enter')
     def set_option_help(self):
         help_text={
             'width':'Ширина исходного кадра подставляется автоматически. Измените значение для результата; 0 отключает ограничение.',
@@ -251,6 +273,7 @@ class Window(QMainWindow):
         for key,w in self.controls.items():
             w.setVisible(key in visible); self.advanced_form.labelForField(w).setVisible(key in visible)
         self.advanced.setVisible(bool(visible))
+        self.lock_ratio.setVisible('width' in visible and 'height' in visible)
         quality_visible=op in ('image','video','burn_subtitle') and fmt not in ('png','bmp','tiff','ico')
         self.quality.setVisible(quality_visible);self.basic_form.labelForField(self.quality).setVisible(quality_visible)
         resolution_visible=op in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif')
@@ -258,6 +281,23 @@ class Window(QMainWindow):
     def reset_options(self):
         self._preset_active=False;self.apply_options(asdict(Options(format=self.format.currentText())))
         self.update_source(force=True)
+    def dimension_changed(self,changed,value):
+        if self._syncing_dimensions:return
+        if self.resolution.currentIndex():
+            self.resolution.blockSignals(True);self.resolution.setCurrentIndex(0);self.resolution.blockSignals(False)
+        if not self.lock_ratio.isChecked() or not self._source_ratio or not value:return
+        other='height' if changed=='width' else 'width'
+        desired=round(value/self._source_ratio if changed=='width' else value*self._source_ratio)
+        self._syncing_dimensions=True
+        try:self.controls[other].setValue(min(16384,max(1,desired)))
+        finally:self._syncing_dimensions=False
+    def choose_resolution(self,index):
+        if not index or not hasattr(self,'controls') or 'width' not in self.controls:return
+        width,height=map(int,self.resolution.itemText(index).split(' × '))
+        if self._source_ratio and abs(width/height-self._source_ratio)>.005:self.lock_ratio.setChecked(False)
+        self._syncing_dimensions=True
+        try:self.controls['width'].setValue(width);self.controls['height'].setValue(height)
+        finally:self._syncing_dimensions=False
     def options(self):
         o=Options(format=self.format.currentText(),quality=[82,95,55][self.quality.currentIndex()],extra_file=self.extra_file.text())
         for k,w in self.controls.items():
@@ -265,13 +305,12 @@ class Window(QMainWindow):
             val=w.isChecked() if isinstance(w,QCheckBox) else w.value() if isinstance(w,(QSpinBox,QDoubleSpinBox)) else w.currentText() if isinstance(w,QComboBox) else w.text()
             if k in ('rotate','emoji_frames'): val=int(val)
             setattr(o,k,val)
-        if self.resolution.currentIndex() and self.operation.currentData() in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif'):
-            o.width,o.height=map(int,self.resolution.currentText().split(' × '))
         o.validate(); return o
     def apply_options(self,data):
         self.resolution.setCurrentIndex(0)
         self.format.setCurrentText(data.get('format',self.format.currentText()))
         self.quality.setCurrentIndex(1 if data.get('quality',82)>90 else 2 if data.get('quality',82)<65 else 0)
+        self._syncing_dimensions=True
         for k,w in self.controls.items():
             if k not in data: continue
             v=data[k]
@@ -279,6 +318,7 @@ class Window(QMainWindow):
             elif isinstance(w,(QSpinBox,QDoubleSpinBox)): w.setValue(v)
             elif isinstance(w,QComboBox): w.setCurrentText(str(v))
             else: w.setText(str(v))
+        self._syncing_dimensions=False
     def choose_files(self):
         files,_=QFileDialog.getOpenFileNames(self,'Добавить файлы'); self.add_paths(files)
     def choose_folder(self):
@@ -332,10 +372,15 @@ class Window(QMainWindow):
             if info.get('channels'):bits.append(f"{info['channels']} канал(а)")
             if info.get('pages'):bits.append(f"{info['pages']} стр.")
             self.media_preview.details.setText('  •  '.join(bits))
+            if info.get('width') and info.get('height'):
+                self._source_ratio=info['width']/info['height']
+            else:self._source_ratio=None
             if not self._preset_active:
+                self._syncing_dimensions=True
                 for key in ('width','height','fps','sample_rate','channels','frame_ms'):
                     if info.get(key) is not None and key in self.controls:
                         self.controls[key].setValue(info[key])
+                self._syncing_dimensions=False
             self.preview_timer.start(180)
         self.async_.run(lambda:source_info(path),done)
     def refresh_image_preview(self):
@@ -347,7 +392,7 @@ class Window(QMainWindow):
             from PIL import Image, ImageOps
             from io import BytesIO
             with Image.open(path) as source:
-                image=source.convert('RGBA')
+                image=ImageOps.exif_transpose(source).convert('RGBA')
                 crop=self.controls['crop'].text().strip()
                 if crop:
                     x,y,w,h=[int(v.strip()) for v in crop.split(',')]
@@ -369,6 +414,35 @@ class Window(QMainWindow):
                 image.thumbnail((1100,700)); data=BytesIO();image.save(data,'PNG')
             pix=QPixmap();pix.loadFromData(data.getvalue());self.media_preview.show_pixmap(pix)
         except (ValueError,OSError,ZeroDivisionError):pass # Keep the last valid frame while the crop field is being typed.
+    def compare_video_frame(self):
+        path=getattr(self,'_source_path',None)
+        if not path or file_kind(path)!='video':return
+        try:o=self.options()
+        except Exception as error:self.error(error);return
+        position=self.media_preview.player.position()/1000 if self.media_preview.player else 0
+        position=max(position,o.start)
+        if o.end:position=min(position,max(o.start,o.end-.1))
+        self.compare_video_button.setEnabled(False);self.toast('Готовлю сравнение текущего кадра…')
+        def prepare():
+            from tempfile import TemporaryDirectory
+            ff=executable('ffmpeg')
+            if not ff:raise RuntimeError('Нужен FFmpeg.')
+            with TemporaryDirectory() as folder:
+                before=Path(folder)/'before.png';after=Path(folder)/'after.png'
+                vf,_=Engine().filters(o)
+                vf=[part for part in vf if not part.startswith(('fps=','setpts='))]
+                for target,filters in ((before,[]),(after,vf)):
+                    command=[ff,'-v','error','-ss',str(position),'-i',path,'-frames:v','1']
+                    if filters:command+=['-vf',','.join(filters)]
+                    command+=['-y',str(target)]
+                    Engine().runner.run(command)
+                return before.read_bytes(),after.read_bytes()
+        def show(result):
+            self.compare_video_button.setEnabled(True)
+            if isinstance(result,Exception):self.error(result);return
+            before=QPixmap();after=QPixmap();before.loadFromData(result[0]);after.loadFromData(result[1])
+            self.media_preview.show_video_comparison(before,after)
+        self.async_.run(prepare,show)
     def refresh_compatible(self):
         paths=self.input_paths();allowed=compatible_operations(paths)
         signature=tuple(sorted({file_kind(path) for path in paths}))
@@ -384,6 +458,8 @@ class Window(QMainWindow):
             desc=next(iter(kinds)) if len(kinds)==1 else 'Смешанные типы'
             self.input_summary.setText(f'{len(paths)} файл(ов) • {desc} • доступно действий: {len(allowed)}')
         else:self.input_summary.setText('Добавь файлы — покажу доступные действия.')
+        count=1 if REGISTRY[preferred].multiple else len(paths)
+        self.enqueue_button.setText(f'Добавить в очередь: {count} задач(и)   Ctrl+Enter' if paths else 'Добавить в очередь   Ctrl+Enter')
         if paths:self.select_section(REGISTRY[preferred].category)
         self.operation_changed();self.rebuild_tools(self.search.text())
     def choose_extra(self):
@@ -583,7 +659,7 @@ class Window(QMainWindow):
                 auto.blockSignals(True);auto.setChecked(self.store.get('autostart',False));auto.blockSignals(False);self.error(e)
         auto.toggled.connect(save_startup);tray.toggled.connect(save_startup);bl.addWidget(auto);bl.addWidget(tray);self.extra_layout.addWidget(box)
         box,bl=card();bl.addWidget(label('Компоненты','title'))
-        bl.addWidget(label('Нажмите «Установить»: Windows загрузит компонент через WinGet. Может потребоваться подтверждение Windows. FFmpeg содержит также ffprobe.','subtitle'))
+        bl.addWidget(label('Нажмите «Установить»: WinGet загрузит компонент и примет соглашения источника и пакета. Может потребоваться подтверждение Windows. FFmpeg содержит также ffprobe.','subtitle'))
         for name,title,package in [('ffmpeg','FFmpeg + ffprobe','Gyan.FFmpeg'),('soffice','LibreOffice (soffice)','TheDocumentFoundation.LibreOffice'),('ebook-convert','Calibre (ebook-convert)','calibre.calibre')]:
             p=executable(name);row=QHBoxLayout();row.addWidget(label(title+'  —  '+('найден' if p else 'не установлен')),1)
             if p: row.addWidget(label(p,'subtitle'))
@@ -593,15 +669,38 @@ class Window(QMainWindow):
             else:row.addWidget(button('Сайт загрузки',lambda n=name:QDesktopServices.openUrl(QUrl(URLS.get(n,URLS['ffmpeg'])))))
             bl.addLayout(row)
         if not shutil.which('winget') and os.name=='nt':bl.addWidget(label('WinGet не найден. Установите «Установщик приложений» Windows или используйте сайт компонента.','subtitle'))
-        if self._install_process:bl.addWidget(label('Идёт установка: '+self._install_name,'subtitle'))
+        if self._install_process:
+            bl.addWidget(label('Идёт установка: '+self._install_name,'subtitle'))
+            self.install_progress=QProgressBar();self.install_progress.setRange(0,0);self.install_progress.setFormat('Загрузка и установка…');bl.addWidget(self.install_progress)
+            bl.addWidget(button('Отменить установку',self.cancel_install))
         elif getattr(self,'_install_status',''):bl.addWidget(label(self._install_status,'subtitle'))
+        self.install_log=QPlainTextEdit();self.install_log.setReadOnly(True);self.install_log.setMaximumHeight(115)
+        self.install_log.setPlaceholderText('Здесь появится ход установки и сообщение об ошибке.')
+        self.install_log.setPlainText(self._install_output);bl.addWidget(self.install_log)
         self.extra_layout.addWidget(box)
-        self.extra_layout.addWidget(button('Проверить обновления GitHub',self.check_update));self.extra_layout.addWidget(label('Обычные пользовательские файлы обрабатываются локально на компьютере. Приложение не отправляет их на серверы. Обновления проверяются только по нажатию кнопки.','subtitle'));self.extra_layout.addStretch()
+        box,bl=card();bl.addWidget(label('Обновление программы','title'))
+        bl.addWidget(label(f'Установлена версия {__version__}.','subtitle'))
+        bl.addWidget(label(self._update_status,'subtitle'))
+        if self._update_busy:
+            self.update_bar=QProgressBar();self.update_bar.setRange(0,100);self.update_bar.setValue(self._update_percent)
+            bl.addWidget(self.update_bar);bl.addWidget(button('Отменить загрузку',self.cancel_update))
+        else:
+            bl.addWidget(button('Проверить обновления',self.check_update))
+            if self._release:
+                if os.name=='nt' and getattr(sys,'frozen',False):
+                    install=button(f'Скачать и установить {self._release.version}',self.start_update,True)
+                    install.setEnabled(not bool(self.queue.active));bl.addWidget(install)
+                    if self.queue.active:bl.addWidget(label('Дождитесь завершения очереди перед обновлением.','subtitle'))
+                else:bl.addWidget(button('Открыть выпуск',lambda:QDesktopServices.openUrl(QUrl(self._release.url))))
+        self.extra_layout.addWidget(box)
+        self.extra_layout.addWidget(label('Файлы обрабатываются локально. Проверка версии обращается к GitHub при открытии настроек; загрузка обновления или компонентов начинается только по кнопке.','subtitle'));self.extra_layout.addStretch()
+        if not self._update_checked and os.name=='nt' and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
+            self._update_checked=True;QTimer.singleShot(0,self.check_update)
     def install_component(self,name,title,package):
         if self._install_process:return
         binary=shutil.which('winget')
         if os.name!='nt' or not binary:self.toast('Для установки нужен WinGet в Windows.');return
-        self._install_name=title;self._install_status='';process=QProcess(self)
+        self._install_name=title;self._install_status='';self._install_output='';self._install_cancelled=False;process=QProcess(self)
         self._install_process=process
         process.setProgram(binary)
         process.setArguments(['install','--id',package,'--exact','--source','winget','--accept-source-agreements','--accept-package-agreements','--disable-interactivity'])
@@ -609,12 +708,18 @@ class Window(QMainWindow):
         output=[]
         def collect():
             data=bytes(process.readAllStandardOutput()).decode('utf-8','replace')
-            if data:output.append(data[-3000:]);output[:]=output[-12:]
+            if data:
+                output.append(data[-3000:]);output[:]=output[-12:]
+                self._install_output=(''.join(output)).replace('\r','\n')[-5000:]
+                if self.current=='Настройки' and hasattr(self,'install_log'):
+                    self.install_log.setPlainText(self._install_output)
+                    bar=self.install_log.verticalScrollBar();bar.setValue(bar.maximum())
         process.readyReadStandardOutput.connect(collect)
         def finish(code,status):
             collect();self._install_process=None;process.deleteLater()
             found=executable(name)
-            if code==0 and found:self._install_status=f'{title} установлен и обнаружен: {found}'
+            if self._install_cancelled:self._install_status=f'Установка {title} отменена.'
+            elif code==0 and found:self._install_status=f'{title} установлен и обнаружен: {found}'
             elif code==0:self._install_status=f'{title} установлен. Перезапустите приложение, чтобы обновился системный PATH.'
             else:
                 detail=''.join(output).strip().splitlines()
@@ -624,6 +729,14 @@ class Window(QMainWindow):
         process.finished.connect(finish)
         process.errorOccurred.connect(lambda error:self.toast('Не удалось запустить WinGet: '+process.errorString()))
         process.start();self.show_settings()
+    def cancel_install(self):
+        process=self._install_process
+        if not process:return
+        self._install_cancelled=True
+        if os.name=='nt' and process.processId():
+            subprocess.Popen(['taskkill','/PID',str(process.processId()),'/T','/F'],creationflags=subprocess.CREATE_NO_WINDOW)
+        else:process.kill()
+        self._install_status='Отмена установки…'
     def show_about(self):
         self.clear_extra();self.extra_layout.addWidget(label('COKKER Converter  '+__version__,'title'));self.extra_layout.addWidget(label('Локальная обработка видео, аудио, изображений и документов.\nПредварительная версия: проверяйте результат перед удалением исходников.'))
         self.extra_layout.addWidget(button('GitHub',lambda:QDesktopServices.openUrl(QUrl(REPO))));self.extra_layout.addWidget(button('VRChat: открыть сайт для загрузки Emoji',lambda:QDesktopServices.openUrl(QUrl('https://vrchat.com/home'))));self.extra_layout.addStretch()
@@ -632,14 +745,59 @@ class Window(QMainWindow):
         if theme=='system':theme='dark' if QApplication.styleHints().colorScheme()==Qt.ColorScheme.Dark else 'light'
         QApplication.instance().setStyleSheet(stylesheet(theme))
     def check_update(self):
-        self.toast('Проверяю GitHub Releases…')
+        if self._update_busy:return
+        self._update_checked=True;self._update_status='Проверяю выпуски GitHub…'
+        if self.current=='Настройки':self.show_settings()
         def done(value):
-            if isinstance(value,Exception):self.error(value)
+            if isinstance(value,Exception):self._update_status='Не удалось проверить обновления: '+str(value).splitlines()[-1][:180]
             else:
-                version,url=value
-                if version.lstrip('v')==__version__:self.toast('Установлена последняя опубликованная версия.')
-                elif QMessageBox.question(self,'Обновление',f'На GitHub опубликована версия {version}. Открыть?')==QMessageBox.StandardButton.Yes:QDesktopServices.openUrl(QUrl(url))
-        self.async_.run(latest_release,done)
+                self._release=value
+                self._update_status=f'Доступно обновление {value.version}.' if value else 'Установлена последняя опубликованная версия.'
+            if self.current=='Настройки':self.show_settings()
+        self.async_.run(lambda:check_release(__version__),done)
+    def on_update_progress(self,percent):
+        self._update_percent=percent
+        if self.current=='Настройки' and self._update_busy:
+            self.update_bar.setValue(percent)
+    def cancel_update(self):
+        self._update_cancel.set();self._update_status='Останавливаю загрузку…'
+        if self.current=='Настройки':self.show_settings()
+    def start_update(self):
+        if not self._release or self._update_busy:return
+        if self.queue.active:self.toast('Дождитесь завершения активных задач.');return
+        if os.name!='nt' or not getattr(sys,'frozen',False):
+            QDesktopServices.openUrl(QUrl(self._release.url));return
+        portable=(Path(sys.executable).parent/'portable.flag').exists()
+        kind='portable' if portable else 'setup';release=self._release
+        self._update_cancel.clear();self._update_busy=True;self._update_percent=0
+        self._update_status=f'Загружаю {release.version} и проверяю файл…'
+        if self.current=='Настройки':self.show_settings()
+        def work():
+            folder=self.store.root/'updates'/release.version
+            downloaded=download(release,kind,folder,self.update_progress.emit,self._update_cancel)
+            if self._update_cancel.is_set():raise InterruptedError('Загрузка отменена.')
+            if portable:return prepare_portable(downloaded,Path(tempfile.gettempdir())/f'COKKER-Update-{release.version}-{uuid.uuid4().hex[:8]}')
+            return downloaded
+        def ready(result):
+            self._update_busy=False
+            if isinstance(result,Exception):
+                self._update_status=str(result)
+                if self.current=='Настройки':self.show_settings()
+                return
+            if self.queue.active:
+                self._update_status='Загрузка завершена. Дождитесь задач и повторите установку.'
+                if self.current=='Настройки':self.show_settings()
+                return
+            try:
+                if portable:
+                    subprocess.Popen([str(Path(result)/'COKKER Converter.exe'),'--apply-update',str(Path(sys.executable).parent),str(os.getpid())],cwd=result,close_fds=True)
+                else:
+                    subprocess.Popen([str(result),'/SP-','/NORESTART','/CLOSEAPPLICATIONS',f'/DIR={Path(sys.executable).parent}'],close_fds=True)
+                self.exiting=True;self.close()
+            except Exception as error:
+                self._update_status='Не удалось запустить установку: '+str(error)
+                if self.current=='Настройки':self.show_settings()
+        self.async_.run(work,ready)
     def inspect(self):
         paths=self.input_paths()
         if not paths:return
@@ -682,6 +840,8 @@ class Window(QMainWindow):
         if self.queue.active and QMessageBox.question(self,'Выход','Отменить активную обработку и выйти?')!=QMessageBox.StandardButton.Yes:return
         self.exiting=True;self.close()
     def closeEvent(self,event):
+        if not self.exiting and self._update_busy:
+            self.cancel_update();self.toast('Дождитесь остановки загрузки обновления.');event.ignore();return
         if not self.exiting and self.store.get('close_tray',False) and self.tray.isVisible():
             self.hide();event.ignore()
             if not self.store.get('tray_notice',False):self.tray.showMessage('COKKER Converter','Приложение продолжает работать в трее. Для выхода используйте меню значка.');self.store.set('tray_notice',True)

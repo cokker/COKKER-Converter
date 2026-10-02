@@ -1,6 +1,6 @@
 # Сборка Windows x64
 
-В репозитории workflow `Windows x64` на `windows-2022` запускает `pytest`, собирает PyInstaller `onedir`, устанавливает официально опубликованные через Chocolatey FFmpeg и Inno Setup, создаёт Portable ZIP и Setup EXE. Тег `v0.9.0` запускает публикацию GitHub prerelease лишь после успешной проверки и сборки. Если workflow завершился с ошибкой, не считайте файлы выпущенными.
+В репозитории workflow `Windows x64` на `windows-2022` запускает `pytest`, собирает PyInstaller `onedir`, устанавливает через Chocolatey FFmpeg и Inno Setup, создаёт Portable ZIP и Setup EXE. Тег вида `v0.9.3` запускает публикацию GitHub prerelease лишь после успешной проверки и сборки. Если workflow завершился с ошибкой, не считайте файлы выпущенными. Проверьте совпадение номера версии в `cokker/__init__.py` и `packaging/setup.iss`.
 
 Локально: Python 3.12 x64, FFmpeg/ffprobe в PATH, Inno Setup 6. Выполните из корня:
 
@@ -10,7 +10,7 @@ py -3.12 -m venv .venv
 $env:QT_QPA_PLATFORM='offscreen'
 .venv\Scripts\python.exe -m pytest -q
 Remove-Item Env:QT_QPA_PLATFORM
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --collect-all pillow_heif --collect-all pypdfium2 main.py
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --icon "assets/logo.ico" --add-data "assets;assets" --collect-all pillow_heif --collect-all pypdfium2 main.py
 New-Item -ItemType Directory -Force "dist/COKKER Converter/components"
 Copy-Item (Get-Command ffmpeg.exe).Source "dist/COKKER Converter/components/ffmpeg.exe"
 Copy-Item (Get-Command ffprobe.exe).Source "dist/COKKER Converter/components/ffprobe.exe"

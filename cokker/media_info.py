@@ -9,7 +9,9 @@ def source_info(path):
     if kind == 'image':
         from PIL import Image
         with Image.open(path) as image:
-            result.update(width=image.width, height=image.height, format=image.format,
+            orientation=image.getexif().get(274,1)
+            width,height=(image.height,image.width) if orientation in (5,6,7,8) else image.size
+            result.update(width=width, height=height, format=image.format,
                           frames=getattr(image, 'n_frames', 1))
             if getattr(image, 'n_frames', 1) > 1:
                 image.seek(0); result['frame_ms'] = image.info.get('duration', 100)

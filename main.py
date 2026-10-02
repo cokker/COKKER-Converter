@@ -8,6 +8,17 @@ from cokker.storage import root_dir
 from cokker.ui import Window
 
 def main():
+    if '--apply-update' in sys.argv:
+        from PySide6.QtWidgets import QMessageBox
+        from cokker.updater import apply_portable
+        index=sys.argv.index('--apply-update')
+        app=QApplication(sys.argv)
+        try:
+            apply_portable(Path(sys.executable).parent,sys.argv[index+1],int(sys.argv[index+2]))
+            return 0
+        except Exception as error:
+            QMessageBox.critical(None,'Обновление COKKER Converter',f'Не удалось заменить Portable-версию:\n{error}\n\nПредыдущая версия осталась в папке программы.')
+            return 1
     app=QApplication(sys.argv);app.setApplicationName('COKKER Converter');app.setOrganizationName('COKKER');app.setQuitOnLastWindowClosed(False)
     if '--self-test' in sys.argv:
         import tempfile

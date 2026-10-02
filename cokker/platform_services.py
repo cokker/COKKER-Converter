@@ -1,4 +1,4 @@
-import os, sys, subprocess, shutil, ctypes, threading, urllib.request, json
+import os, sys, subprocess, shutil, ctypes, threading
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -71,8 +71,3 @@ class ProcessRunner:
                 err.seek(0); detail=err.read().decode('utf-8','replace')[-5000:]
                 raise RuntimeError(detail or f'Компонент завершился с кодом {p.returncode}.')
             return ''.join(output)
-
-def latest_release():
-    req=urllib.request.Request('https://api.github.com/repos/cokker/COKKER-Converter/releases/latest',headers={'User-Agent':'COKKER-Converter'})
-    with urllib.request.urlopen(req,timeout=15) as r: data=json.load(r)
-    return data['tag_name'],data['html_url']
