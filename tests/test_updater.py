@@ -8,7 +8,7 @@ from cokker.updater import Release,select_release,download,prepare_portable,appl
 from cokker import __version__
 
 def test_installer_version_matches_app():
-    assert f'#define AppVersion "{__version__}"' in (Path(__file__).parents[1]/'packaging'/'setup.iss').read_text()
+    assert f'#define AppVersion "{__version__}"' in (Path(__file__).parents[1]/'packaging'/'setup.iss').read_text(encoding='utf-8')
 
 def test_prerelease_updates_require_both_binaries():
     assets=[{'name':name,'state':'uploaded'} for name in ('COKKER-Converter-Portable-x64.zip','COKKER-Converter-Setup-x64.exe')]
@@ -59,7 +59,7 @@ def test_portable_replacement_preserves_user_data(monkeypatch):
         assert (target/'COKKER Converter.exe').read_bytes()==b'new'
         assert (target/'_internal'/'app.dll').read_bytes()==b'new dll'
         assert (target/'data'/'presets.json').read_text()=='keep me'
-        assert calls[0][0]==str(target/'COKKER Converter.exe')
+        assert Path(calls[0][0]).samefile(target/'COKKER Converter.exe')
 
 def test_portable_replacement_rolls_back_on_launch_failure(monkeypatch):
     with tempfile.TemporaryDirectory() as folder:
