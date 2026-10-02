@@ -1,0 +1,59 @@
+name: Windows x64
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest pyinstaller
+      - name: Install media build tools
+        run: |
+          choco install ffmpeg innosetup --no-progress -y
+          ffmpeg -version
+      - name: Run conversion and UI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+      - name: Build portable app
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "COKKER Converter" --collect-all pillow_heif --collect-all pypdfium2 main.py
+          New-Item -ItemType Directory -Force "dist/COKKER Converter/components"
+          Copy-Item (Get-Command ffmpeg.exe).Source "dist/COKKER Converter/components/ffmpeg.exe"
+          Copy-Item (Get-Command ffprobe.exe).Source "dist/COKKER Converter/components/ffprobe.exe"
+          New-Item -ItemType File "dist/COKKER Converter/portable.flag"
+          Copy-Item LICENSE "dist/COKKER Converter/LICENSE-COKKER.txt"
+          Compress-Archive -Path "dist/COKKER Converter" -DestinationPath "dist/COKKER-Converter-Portable-x64.zip" -Force
+      - name: Build installer
+        shell: pwsh
+        run: |
+          Remove-Item "dist/COKKER Converter/portable.flag"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "packaging/setup.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: COKKER-Converter-Windows-x64
+          path: |
+            dist/COKKER-Converter-Portable-x64.zip
+            dist/COKKER-Converter-Setup-x64.exe
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create $env:GITHUB_REF_NAME "dist/COKKER-Converter-Portable-x64.zip" "dist/COKKER-Converter-Setup-x64.exe" --title "COKKER Converter $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md --prerelease
