@@ -69,4 +69,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release create $env:GITHUB_REF_NAME "dist/COKKER-Converter-Portable-x64.zip" "dist/COKKER-Converter-Setup-x64.exe" --title "COKKER Converter $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md --prerelease
+          $assets = @("dist/COKKER-Converter-Portable-x64.zip", "dist/COKKER-Converter-Setup-x64.exe")
+          gh release view $env:GITHUB_REF_NAME --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $assets --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release edit $env:GITHUB_REF_NAME --title "COKKER Converter $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md --prerelease
+          } else {
+            gh release create $env:GITHUB_REF_NAME $assets --title "COKKER Converter $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md --prerelease
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
