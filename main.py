@@ -51,6 +51,15 @@ def main():
             trace('add:received:'+str(window.input_paths()))
             paths=window.input_paths()
             if len(paths)!=1 or not Path(paths[0]).samefile(image):raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
+            for _ in range(200):
+                app.processEvents()
+                if window._source_bytes:break
+                time.sleep(.01)
+            if window.size_row.isHidden() or window.operation.currentData()!='image':
+                raise RuntimeError('Ползунок размера или автоматический выбор изображения не работают')
+            window.size_slider.setValue(75)
+            if window.options().target_mb<=0:raise RuntimeError('Ползунок не применил целевой размер PNG')
+            trace('slider:applied')
             trace('buttons:painting');warnings=[]
             previous=qInstallMessageHandler(lambda kind,context,message:warnings.append(message))
             try:

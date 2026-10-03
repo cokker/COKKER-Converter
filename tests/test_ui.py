@@ -7,6 +7,7 @@ from PIL import Image
 from cokker.storage import Store
 from cokker.ui import Window
 from cokker.registry import compatible_operations, file_kind
+from cokker.registry import REGISTRY
 from cokker.updater import Release
 
 def test_navigation_and_shortcuts():
@@ -37,7 +38,9 @@ def test_automatic_file_actions_and_brand():
         assert all(not window.nav.item(i).icon().isNull() for i in range(window.nav.count()))
         window.receive_paths([str(picture)])
         assert window.operation.currentData()=='image'
-        assert {window.operation.itemData(i) for i in range(window.operation.count())}=={'image','images_pdf','archive'}
+        assert {window.operation.itemData(i) for i in range(window.operation.count())}=={'image'}
+        assert not window.size_row.isHidden() and window.size_row.parentWidget().objectName()=='card'
+        assert '*.mp4' not in window.section_file_filter()
         window.receive_paths([str(video)])
         assert window.input_paths()==[str(picture)] # The image section rejects a video.
         window.navigate('Архивы');window.receive_paths([str(video)])
@@ -46,13 +49,17 @@ def test_automatic_file_actions_and_brand():
         window.navigate('Изображения')
         assert window.operation.currentData()=='image'
         window.files.item(0).setSelected(True);window.remove_inputs()
-        assert window.operation.count()>10
+        assert {window.operation.itemData(i) for i in range(window.operation.count())}=={'image','images_gif'}
         window.navigate('Главная')
         window.receive_paths([str(video)])
         video_actions={window.operation.itemData(i) for i in range(window.operation.count())}
         assert window.operation.currentData()=='video'
-        assert {'video','remux','mute','video_gif','audio'} <= video_actions
+        assert {'video','remux','mute','video_gif'} <= video_actions
+        assert 'audio' not in video_actions
         assert 'image' not in video_actions and 'pdf_merge' not in video_actions
+        assert REGISTRY['video_gif'].category=='Видео'
+        window.navigate('Аудио');assert window.operation.currentData()=='audio'
+        window.navigate('Видео');assert 'video_gif' in {window.operation.itemData(i) for i in range(window.operation.count())}
         document=root/'paper.txt';document.write_text('text',encoding='utf-8')
         window.navigate('Документы');window.receive_paths([str(picture),str(document)])
         assert window.input_paths()==[str(document)]
@@ -87,10 +94,37 @@ def test_source_metadata_visible_options_and_quick_favorite():
         assert window.options().width==160
         window.size_slider.setValue(50)
         assert 0<window.controls['target_mb'].value()<picture.stat().st_size/1048576
+        assert '50%' in window.size_percent.text() and 'цель' in window.size_hint.text()
         window.add_favorite()
         saved=window.presets.all();assert saved[-1]['parameters']['width']==160
         window.navigate('Избранное')
         assert window.pages.currentWidget() is window.extra
+        window.exiting=True;window.close()
+
+def test_home_detects_jpeg_and_size_control_for_png():
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);photo=root/'photo.jpg';png=root/'icon.png'
+        Image.new('RGB',(800,600),'orange').save(photo,quality=95)
+        Image.new('RGB',(800,600),'blue').save(png)
+        window=Window(Store(root/'settings'));window.navigate('Главная')
+        window.receive_paths([str(photo)])
+        for _ in range(100):
+            app.processEvents();time.sleep(.01)
+            if window._source_bytes:break
+        assert window.current=='Изображения' and window.pages.currentWidget() is window.editor
+        assert window.operation.currentData()=='image' and window.format.currentText()=='jpg'
+        assert not window.size_row.isHidden()
+        window.size_slider.setValue(60)
+        assert window.options().target_mb>0
+        window.files.item(0).setSelected(True);window.remove_inputs()
+        window.receive_paths([str(png)])
+        for _ in range(100):
+            app.processEvents();time.sleep(.01)
+            if window._source_bytes==png.stat().st_size:break
+        assert window.format.currentText()=='png' and not window.size_row.isHidden()
+        window.size_slider.setValue(75)
+        assert window.options().target_mb>0 and 'разрешение' in window.size_hint.text()
         window.exiting=True;window.close()
 
 def test_video_frame_comparison_uses_current_settings():

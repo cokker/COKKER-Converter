@@ -26,6 +26,7 @@ def source_info(path):
                 try: result['fps'] = round(float(numerator)/float(denominator), 3)
                 except (ValueError, ZeroDivisionError): pass
             if stream.get('codec_type') == 'audio' and 'sample_rate' not in result:
+                result['has_audio'] = True
                 result['sample_rate'] = int(stream.get('sample_rate') or 0)
                 result['channels'] = int(stream.get('channels') or 0)
     elif kind == 'pdf':

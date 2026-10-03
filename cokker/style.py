@@ -12,6 +12,9 @@ def stylesheet(theme='dark'):
     QLabel#brand {{font-size:20px;font-weight:800;color:#ff9c56;padding:0;}}
     QLabel#sidebarHint {{color:{muted};font-size:11px;padding:7px 3px 0 3px;}}
     QFrame#sidebar {{background:{panel};border:1px solid {border};border-radius:18px;}}
+    QFrame#sizePanel {{background:{hover};border:1px solid {border};border-radius:12px;}}
+    QLabel#sizeTitle {{font-weight:650;font-size:14px;}}
+    QLabel#sizePercent {{color:#ff9c56;font-weight:700;}}
     QFrame#card,QGroupBox {{background:{panel};border:1px solid {border};border-radius:16px;padding:14px;}}
     QWidget#componentRow {{background:transparent;}}
     QGroupBox {{margin-top:12px;}}

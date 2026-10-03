@@ -1,4 +1,4 @@
-import tempfile, threading, subprocess, zipfile
+import tempfile, threading, subprocess, zipfile, random
 from pathlib import Path
 from PIL import Image
 from pypdf import PdfReader
@@ -18,6 +18,11 @@ def test_image_pdf_archive():
         with Image.open(jpg) as im:assert im.size==(56,64)
         webp=convert([a],'image','webp',d,target_mb=.004)
         assert webp.stat().st_size<=.004*1024*1024
+        noise=d/'noise.png';Image.frombytes('RGB',(256,256),random.Random(19).randbytes(256*256*3)).save(noise)
+        target=noise.stat().st_size*.75/1048576
+        compact=convert([noise],'image','png',d,target_mb=target)
+        assert compact.stat().st_size<=target*1048576
+        with Image.open(compact) as im:assert im.width<256 and im.height<256
         gif=convert([a,b],'images_gif','gif',d,frame_ms=120)
         with Image.open(gif) as im:assert im.n_frames==2
         pdf=convert([a,b],'images_pdf','pdf',d)

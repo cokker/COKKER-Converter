@@ -244,7 +244,7 @@ class Engine:
                 enc=('h264' if codec=='libx264' else 'hevc')+'_'+suffix
             args+=['-c:v',enc,'-pix_fmt','yuv420p']
             if o.target_mb:
-                rate=int(o.target_mb*1024*1024*8*.95/max(result_duration,.01)-o.audio_bitrate*1000)
+                rate=int(o.target_mb*1024*1024*8*.95/max(result_duration,.01)-(o.audio_bitrate*1000 if has_audio else 0))
                 if rate<32000: raise ValueError('Лимит слишком мал для длительности. Увеличьте его.')
                 args+=['-b:v',str(rate)]
             elif enc in ('libx264','libx265','libvpx-vp9','libaom-av1'): args+=['-crf',str(round(40-o.quality*.28))]

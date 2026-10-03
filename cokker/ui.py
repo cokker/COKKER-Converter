@@ -64,7 +64,7 @@ def card():
     l=QVBoxLayout(w); l.setSpacing(12); return w,l
 
 STATUS={'waiting':'Ожидает','running':'Обработка','interrupted':'Прервано — восстановить?','done':'Готово','cancelled':'Отменено','failed':'Ошибка'}
-SECTION_KINDS={'Видео':{'video'},'Аудио':{'audio','video'},'Изображения':{'image','video'},
+SECTION_KINDS={'Видео':{'video'},'Аудио':{'audio','video'},'Изображения':{'image'},
                'Документы':{'document'},'PDF':{'pdf','image'},'Архивы':None,
                'Электронные книги':{'ebook'},'VRChat':{'video','image'}}
 COMPONENTS=(('ffmpeg','FFmpeg + ffprobe','Gyan.FFmpeg'),('soffice','LibreOffice','TheDocumentFoundation.LibreOffice'),('ebook-convert','Calibre','calibre.calibre'))
@@ -81,8 +81,8 @@ class Window(QMainWindow):
         super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async(self)
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
-        self._source_token=0; self._preset_active=False; self._install_process=None
-        self._source_ratio=None;self._source_bytes=0;self._syncing_dimensions=False;self._syncing_size=False
+        self._source_token=0; self._preset_active=False; self._format_pinned=False; self._install_process=None
+        self._source_ratio=None;self._source_bytes=0;self._source_duration=0;self._source_has_audio=False;self._syncing_dimensions=False;self._syncing_size=False
         self._section_filter=None;self._immediate_ids=set();self._preview_token=0
         self._install_output='';self._install_cancelled=False;self._install_tasks=[]
         self._release=None;self._update_checked=False;self._update_checking=False;self._update_busy=False;self._update_status='Проверка ещё не выполнялась.'
@@ -188,7 +188,8 @@ class Window(QMainWindow):
         for op in OPERATIONS: self.operation.addItem(icon_for(op.category),op.label,op.id)
         self.operation.currentIndexChanged.connect(self.operation_changed)
         self.operation.activated.connect(lambda *_:setattr(self,'_requested_operation',self.operation.currentData()))
-        form.addRow('Действие',self.operation); self.format=QComboBox(); self.format.currentTextChanged.connect(self.update_visible_options);form.addRow('Формат',self.format)
+        form.addRow('Действие',self.operation); self.format=QComboBox(); self.format.currentTextChanged.connect(self.update_visible_options)
+        self.format.activated.connect(lambda *_:setattr(self,'_format_pinned',True));form.addRow('Формат',self.format)
         self.quality=combo(['Сбалансированное','Высокое качество','Максимальное сжатие']); form.addRow('Качество',self.quality)
         self.resolution=combo(['Оригинальное','3840 × 2160','2560 × 1440','1920 × 1080','1280 × 720','1080 × 1920','1080 × 1080','512 × 512'])
         form.addRow('Готовый размер',self.resolution); self.basic_form=form;bl.addLayout(form); self.editor_layout.addWidget(basic)
@@ -211,14 +212,20 @@ class Window(QMainWindow):
         target=spin(0,1048576,0,True);target.setDecimals(6);target.setSingleStep(.1)
         add('target_mb','Целевой размер, МБ (видео — оценка)',target)
         self.size_slider=QSlider(Qt.Orientation.Horizontal);self.size_slider.setRange(5,100);self.size_slider.setValue(100)
-        self.size_slider.setToolTip('Перетащите для выбора целевого размера относительно исходного файла. 100% отключает ограничение. Для видео расчёт приблизительный.')
+        self.size_slider.setEnabled(False)
+        self.size_slider.setToolTip('Перетащите для выбора размера относительно исходного файла. 100% — без ограничения. Для фото применяется сжатие, а если его недостаточно — уменьшение разрешения. Для видео автоматически рассчитывается битрейт.')
         self.size_hint=label('Добавьте файл, чтобы выбрать размер результата.','subtitle')
-        size_row=QWidget();size_layout=QVBoxLayout(size_row);size_layout.setContentsMargins(0,0,0,0)
-        size_layout.addWidget(self.size_slider);size_layout.addWidget(self.size_hint)
-        af.addRow('Размер файла',size_row);self.size_row=size_row
+        self.size_row=QFrame();self.size_row.setObjectName('sizePanel')
+        size_layout=QVBoxLayout(self.size_row);size_layout.setContentsMargins(15,12,15,12);size_layout.setSpacing(8)
+        size_heading=QHBoxLayout();size_heading.addWidget(label('Размер результата','sizeTitle'),1)
+        self.size_percent=label('Без ограничения','sizePercent');size_heading.addWidget(self.size_percent)
+        size_layout.addLayout(size_heading);size_layout.addWidget(self.size_slider);size_layout.addWidget(self.size_hint)
+        bl.addWidget(self.size_row)
         self.size_slider.valueChanged.connect(self.size_slider_changed)
         target.valueChanged.connect(self.target_size_changed)
-        add('audio_bitrate','Аудиобитрейт, кбит/с',spin(8,512,192)); add('sample_rate','Частота аудио (0 = исходная)',spin(0,192000)); add('channels','Каналы (0 = исходные)',spin(0,2))
+        add('audio_bitrate','Аудиобитрейт, кбит/с',spin(8,512,192))
+        self.controls['audio_bitrate'].valueChanged.connect(lambda *_:self.update_size_hint())
+        add('sample_rate','Частота аудио (0 = исходная)',spin(0,192000)); add('channels','Каналы (0 = исходные)',spin(0,2))
         add('normalize','Нормализация громкости',QCheckBox()); add('volume','Громкость, ×',spin(0,10,1,True))
         add('strip_metadata','Удалять метаданные',QCheckBox()); self.controls['strip_metadata'].setChecked(True)
         add('frame_ms','GIF: длительность кадра, мс',spin(20,60000,100)); add('frame_delays','GIF: длительности через запятую',QLineEdit()); add('loop','GIF: повторы (0 = бесконечно)',spin(0,65535))
@@ -321,20 +328,19 @@ class Window(QMainWindow):
             'mute':{'start','end','strip_metadata'},'add_subtitle':{'start','end','strip_metadata'},
             'remove_subtitle':{'start','end','strip_metadata'},'extract_subtitle':{'start','end'},
         }.get(op,set())
-        if op=='image' and fmt not in ('jpg','webp','avif'):visible=visible-{'target_mb'}
         self._visible_options=visible
         for key,w in self.controls.items():
             w.setVisible(key in visible); self.advanced_form.labelForField(w).setVisible(key in visible)
         self.advanced.setVisible(bool(visible))
         self.lock_ratio.setVisible('width' in visible and 'height' in visible)
         self.size_row.setVisible('target_mb' in visible)
-        self.advanced_form.labelForField(self.size_row).setVisible('target_mb' in visible)
+        self.update_size_hint()
         quality_visible=op in ('image','video','burn_subtitle') and fmt not in ('png','bmp','tiff','ico')
         self.quality.setVisible(quality_visible);self.basic_form.labelForField(self.quality).setVisible(quality_visible)
         resolution_visible=op in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif')
         self.resolution.setVisible(resolution_visible);self.basic_form.labelForField(self.resolution).setVisible(resolution_visible)
     def reset_options(self):
-        self._preset_active=False;self.apply_options(asdict(Options(format=self.format.currentText())))
+        self._preset_active=False;self._format_pinned=False;self.apply_options(asdict(Options(format=self.format.currentText())))
         self.update_source(force=True)
     def dimension_changed(self,changed,value):
         if self._syncing_dimensions:return
@@ -358,6 +364,9 @@ class Window(QMainWindow):
         self._syncing_size=True
         try:
             value=round(self._source_bytes*percent/100/1048576,6) if percent<100 and self._source_bytes else 0
+            if value and self.operation.currentData() in ('video','burn_subtitle') and self._source_duration and self._source_has_audio:
+                total_rate=value*1048576*8*.95/self._source_duration
+                self.controls['audio_bitrate'].setValue(max(8,min(192,int(total_rate*.2/1000))))
             self.controls['target_mb'].setValue(max(.000001,value) if value else 0)
         finally:self._syncing_size=False
         self.update_size_hint()
@@ -369,9 +378,19 @@ class Window(QMainWindow):
         self.update_size_hint()
     def update_size_hint(self):
         value=self.controls['target_mb'].value()
-        self.size_hint.setText(f'Исходник {size(self._source_bytes)}  →  цель до {size(value*1048576)}' if value and self._source_bytes else
-                               f'Исходник {size(self._source_bytes)}  ·  без лимита размера' if self._source_bytes else
-                               'Добавьте файл, чтобы выбрать размер результата.')
+        self.size_percent.setText(f'{self.size_slider.value()}%' if value else 'Без ограничения')
+        if not self._source_bytes:
+            self.size_hint.setText('Добавьте файл, чтобы выбрать размер результата.');return
+        if not value:
+            self.size_hint.setText(f'Исходник {size(self._source_bytes)} · без лимита размера');return
+        hint=f'Исходник {size(self._source_bytes)} → цель до {size(value*1048576)}'
+        if self.operation.currentData() in ('video','burn_subtitle') and self._source_duration:
+            rate=value*1048576*8*.95/self._source_duration-(self.controls['audio_bitrate'].value()*1000 if self._source_has_audio else 0)
+            hint+=f' · видеобитрейт ≈ {max(0,round(rate/1000))} кбит/с'
+            if rate<32000:hint+=' · цель слишком мала для этой длительности'
+        elif self.operation.currentData()=='image' and self.format.currentText() not in ('jpg','webp','avif'):
+            hint+=' · для этого формата может уменьшиться разрешение'
+        self.size_hint.setText(hint)
     def options(self):
         o=Options(format=self.format.currentText(),quality=[82,95,55][self.quality.currentIndex()],extra_file=self.extra_file.text())
         for k,w in self.controls.items():
@@ -405,7 +424,7 @@ class Window(QMainWindow):
     def section_file_filter(self):
         extensions={'Видео':'*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.m4v *.mpeg *.mpg *.ts *.mts *.flv *.3gp *.ogv',
                     'Аудио':'*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma *.aiff *.ac3 *.mp4 *.mkv *.mov',
-                    'Изображения':'*.png *.jpg *.jpeg *.webp *.avif *.bmp *.gif *.tiff *.ico *.heic *.heif *.mp4 *.mkv *.mov',
+                    'Изображения':'*.png *.jpg *.jpeg *.webp *.avif *.bmp *.gif *.tiff *.ico *.heic *.heif',
                     'Документы':'*.doc *.docx *.odt *.rtf *.txt *.html *.htm *.xls *.xlsx *.ods *.ppt *.pptx *.odp',
                     'PDF':'*.pdf *.png *.jpg *.jpeg *.webp *.bmp *.tiff',
                     'Электронные книги':'*.epub *.mobi *.azw3 *.htmlz',
@@ -466,8 +485,10 @@ class Window(QMainWindow):
         if not force and path==getattr(self,'_source_path',None):return
         self._source_path=path;self._source_token+=1;token=self._source_token
         self.media_preview.set_file(path)
+        self._source_bytes=0;self._source_duration=0;self._source_has_audio=False
+        self.size_slider.setEnabled(False);self.update_size_hint()
         if not path:
-            self._source_bytes=0;self.update_size_hint();return
+            return
         self.media_preview.details.setText('Читаю параметры файла…')
         def done(info):
             if token!=self._source_token:return
@@ -482,7 +503,8 @@ class Window(QMainWindow):
             if info.get('channels'):bits.append(f"{info['channels']} канал(а)")
             if info.get('pages'):bits.append(f"{info['pages']} стр.")
             self.media_preview.details.setText('  •  '.join(bits))
-            self._source_bytes=info['bytes'];self.update_size_hint()
+            self._source_bytes=info['bytes'];self._source_duration=info.get('duration',0);self._source_has_audio=info.get('has_audio',False)
+            self.size_slider.setEnabled(bool(self._source_bytes));self.update_size_hint()
             if info.get('width') and info.get('height'):
                 self._source_ratio=info['width']/info['height']
             else:self._source_ratio=None
@@ -563,12 +585,19 @@ class Window(QMainWindow):
             self.media_preview.show_video_comparison(before,after)
         self.async_.run(prepare,show)
     def refresh_compatible(self):
-        paths=self.input_paths();allowed=compatible_operations(paths)
+        paths=self.input_paths();compatible=compatible_operations(paths)
         signature=tuple(sorted({file_kind(path) for path in paths}))
+        previous_signature=getattr(self,'_detected_signature',None)
         requested=getattr(self,'_requested_operation',None)
+        section=self._section_filter if self._section_filter in SECTION_KINDS else None
+        allowed=[op for op in compatible if op.category==section] if section else compatible
+        if not allowed:allowed=compatible
         preferred=requested if requested in {op.id for op in allowed} else self.operation.currentData() if signature==getattr(self,'_detected_signature',None) else allowed[0].id
         self._detected_signature=signature
         if preferred not in {op.id for op in allowed}:preferred=allowed[0].id
+        if paths and section is None:
+            section=REGISTRY[preferred].category
+            allowed=[op for op in compatible if op.category==section]
         self.operation.blockSignals(True);self.operation.clear()
         for op in allowed:self.operation.addItem(icon_for(op.category),op.label,op.id)
         self.operation.setCurrentIndex(self.operation.findData(preferred));self.operation.blockSignals(False)
@@ -582,7 +611,13 @@ class Window(QMainWindow):
         if paths:
             self.select_section(REGISTRY[preferred].category)
             self._section_filter=REGISTRY[preferred].category
-        self.operation_changed();self.rebuild_tools(self.search.text())
+            self.current=REGISTRY[preferred].category
+        self.operation_changed()
+        if paths and signature!=previous_signature and not self._format_pinned and preferred in ('image','video','audio'):
+            source_format=Path(paths[0]).suffix.lower().lstrip('.')
+            source_format={'jpeg':'jpg'}.get(source_format,source_format)
+            if self.format.findText(source_format)>=0:self.format.setCurrentText(source_format)
+        self.rebuild_tools(self.search.text())
     def choose_extra(self):
         p,_=QFileDialog.getOpenFileName(self,'Выбрать дорожку')
         if p:self.extra_file.setText(p)
@@ -607,9 +642,12 @@ class Window(QMainWindow):
     def convert_now(self):self.enqueue(immediate=True)
     def set_operation(self,id):
         index=self.operation.findData(id)
+        if index<0 and id in {op.id for op in compatible_operations(self.input_paths())}:
+            self._section_filter=REGISTRY[id].category;self.refresh_compatible()
+            index=self.operation.findData(id)
         if index<0:
             self.toast('Это действие не подходит для загруженных файлов. Удалите их или выберите доступное действие.');return
-        self._requested_operation=id;self._section_filter=REGISTRY[id].category
+        self._requested_operation=id;self._section_filter=REGISTRY[id].category;self.current=REGISTRY[id].category
         self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
         self.select_section(REGISTRY[id].category)
     def select_section(self,name):
@@ -631,7 +669,9 @@ class Window(QMainWindow):
     def navigate(self,name):
         if not name:return
         self.current=name; self.heading.setText('Начнём с файла' if name=='Главная' else name)
-        if name=='Главная':self._section_filter=None;self.show_page(self.home)
+        if name=='Главная':
+            self._section_filter=None;self._requested_operation=None;self._format_pinned=False;self._preset_active=False
+            self.show_page(self.home)
         elif name=='Очередь': self.show_page(self.queue_page); self.refresh_queue();self.refresh_result_preview()
         elif name=='История': self.show_page(self.history_page); self.refresh_queue();self.refresh_result_preview()
         elif name=='Избранное': self.show_presets()
@@ -643,8 +683,8 @@ class Window(QMainWindow):
                 paths=self.input_paths();expected=SECTION_KINDS[name]
                 if paths and expected is not None and not any(o.category==name for o in compatible_operations(paths)):
                     self.files.clear();self._source_path=None;self.media_preview.set_file(None)
-                    self.refresh_compatible();self._section_filter=name
                     self.toast('Список входных файлов очищен для нового раздела. Исходные файлы не удалены.')
+                self.refresh_compatible();self._section_filter=name
             op=next((o for o in compatible_operations(self.input_paths()) if o.category==name),None)
             if op:self.set_operation(op.id)
             elif self.input_paths():
@@ -778,7 +818,7 @@ class Window(QMainWindow):
     def use_quick(self,operation,fmt,width=0,height=0):
         self._requested_operation=operation;self.set_operation(operation)
         self.apply_options(asdict(Options(format=fmt,width=width,height=height)))
-        self._preset_active=bool(width or height)
+        self._preset_active=bool(width or height);self._format_pinned=True
         if not self._preset_active and self.input_paths():self.update_source(force=True)
         self.toast('Действие готово. Перетащите файл в окно или нажмите «Добавить».')
     def add_favorite(self):
@@ -804,7 +844,7 @@ class Window(QMainWindow):
             if listing.currentItem():
                 p=listing.currentItem().data(Qt.ItemDataRole.UserRole)
                 self._requested_operation=p['operation'];self.set_operation(p['operation']);self.apply_options(p['parameters'])
-                self._preset_active=True;self.toast('Пресет готов. Добавьте файлы или нажмите Ctrl+Enter.')
+                self._preset_active=True;self._format_pinned=True;self.toast('Пресет готов. Добавьте файлы или нажмите Ctrl+Enter.')
         def delete():
             if listing.currentRow()>=0:listing.takeItem(listing.currentRow());persist()
         def duplicate():
