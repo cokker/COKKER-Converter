@@ -1,8 +1,8 @@
 import os,tempfile,subprocess,time,sys
 from pathlib import Path
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from PySide6.QtWidgets import QApplication,QDialog,QMessageBox,QPushButton
-from PySide6.QtCore import qInstallMessageHandler
+from PySide6.QtWidgets import QApplication,QDialog,QMessageBox,QPushButton,QFrame,QWidget
+from PySide6.QtCore import qInstallMessageHandler,QPoint
 from PIL import Image
 from cokker.storage import Store
 from cokker.ui import Window
@@ -19,6 +19,19 @@ def test_navigation_and_shortcuts():
             assert window.pages.currentWidget() is not None
         window.set_operation('image')
         assert window.operation.currentData()=='image'
+        window.exiting=True;window.close()
+
+def test_sidebar_brand_has_no_rectangular_background():
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        window=Window(Store(Path(tmp)));window.show();app.processEvents()
+        sidebar=window.findChild(QFrame,'sidebar');branding=window.findChild(QWidget,'branding')
+        snapshot=window.grab().toImage()
+        y=branding.height()//2
+        brand_point=branding.mapTo(window,QPoint(0,y))
+        panel_point=sidebar.mapTo(window,QPoint(sidebar.width()-8,branding.y()+y))
+        brand=snapshot.pixelColor(brand_point);panel=snapshot.pixelColor(panel_point)
+        assert max(abs(a-b) for a,b in zip(brand.getRgb()[:3],panel.getRgb()[:3]))<=3
         window.exiting=True;window.close()
 
 def test_automatic_file_actions_and_brand():
