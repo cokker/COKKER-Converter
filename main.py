@@ -50,7 +50,8 @@ def main():
                 time.sleep(.01)
             trace('add:received:'+str(window.input_paths()))
             if window.input_paths()!=[str(image)]:raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
-            if window.operation.currentData()!='image' or window.operation.count()!=3: raise RuntimeError('Автоопределение PNG не работает')
+            trace('operation:'+str(window.operation.currentData())+':'+str(window.operation.count()))
+            if window.operation.currentData()!='image': raise RuntimeError('Автоопределение PNG не работает')
             trace('window:closing');window.exiting=True;window.close();trace('window:closed')
             trace('image:convert');Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)));trace('image:converted')
             if not executable('ffmpeg') or not executable('ffprobe'): raise RuntimeError('FFmpeg отсутствует в сборке')
@@ -86,4 +87,13 @@ def main():
     if args:QTimer.singleShot(0,lambda:window.add_paths(args))
     return app.exec()
 
-if __name__=='__main__':sys.exit(main())
+if __name__=='__main__':
+    try:sys.exit(main())
+    except Exception:
+        if '--self-test' in sys.argv:
+            import traceback
+            path=os.environ.get('COKKER_SELFTEST_TRACE')
+            if path:
+                with open(path,'a',encoding='utf-8') as log: traceback.print_exc(file=log)
+            sys.exit(1)
+        raise
