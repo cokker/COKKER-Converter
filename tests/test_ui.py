@@ -152,15 +152,15 @@ def test_editor_buttons_after_adding_png(monkeypatch):
                 control=buttons[name];control.set_accent(1);control.set_press(1);control.grab()
                 control.set_press(0);control.set_accent(0)
             buttons['Добавить'].click()
-            assert window.input_paths()==[str(picture)]
+            assert len(window.input_paths())==1 and Path(window.input_paths()[0]).samefile(picture)
             buttons['Папка'].click()
-            assert window.input_paths()==[str(picture),str(extra)]
+            assert len(window.input_paths())==2 and all(Path(actual).samefile(expected) for actual,expected in zip(window.input_paths(),(picture,extra)))
             buttons['Информация'].click()
             assert messages and '64 × 48' in messages[-1]
             buttons['Preview / Crop'].click()
             window.files.item(1).setSelected(True)
             buttons['Удалить выбранные'].click()
-            assert window.input_paths()==[str(picture)]
+            assert len(window.input_paths())==1 and Path(window.input_paths()[0]).samefile(picture)
         finally:
             qInstallMessageHandler(previous)
             window.exiting=True;window.close()
