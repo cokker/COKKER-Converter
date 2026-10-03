@@ -33,19 +33,20 @@ def main():
             if not window.icon.availableSizes(): raise RuntimeError('Логотип не включён в сборку')
             window.navigate('Изображения')
             create_dialog=window.files_dialog
+            dialog_test={'non_native':False,'dialog':None}
             def test_dialog():
                 dialog=create_dialog()
                 dialog.setDirectory(str(folder));dialog.selectFile(image.name)
+                dialog_test['dialog']=dialog
                 return dialog
             window.files_dialog=test_dialog
-            dialog_test={'non_native':False}
             def select_test_file():
-                dialog=app.activeModalWidget()
+                dialog=dialog_test['dialog']
                 if isinstance(dialog,QFileDialog):
                     dialog_test['non_native']=dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
                     dialog.done(QDialog.DialogCode.Accepted)
             QTimer.singleShot(100,select_test_file)
-            QTimer.singleShot(5000,lambda:app.activeModalWidget().reject() if isinstance(app.activeModalWidget(),QFileDialog) else None)
+            QTimer.singleShot(5000,lambda:dialog_test['dialog'].reject() if isinstance(dialog_test['dialog'],QFileDialog) else None)
             add=next(b for b in window.editor.findChildren(QPushButton) if b.text()=='Добавить')
             add.click()
             import time

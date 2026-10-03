@@ -48,7 +48,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          $p = Start-Process -FilePath "dist/COKKER Converter/COKKER Converter.exe" -ArgumentList "--self-test" -PassThru -Wait
+          $p = Start-Process -FilePath "dist/COKKER Converter/COKKER Converter.exe" -ArgumentList "--self-test" -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            Stop-Process -Id $p.Id -Force
+            throw "Packaged app smoke test timed out while opening a file"
+          }
           if ($p.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($p.ExitCode)" }
       - name: Check icon embedded in portable EXE
         shell: pwsh
