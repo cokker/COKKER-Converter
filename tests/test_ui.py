@@ -28,21 +28,33 @@ def test_automatic_file_actions_and_brand():
         assert 'video' not in {op.id for op in compatible_operations([picture])}
         window=Window(Store(root/'settings'))
         assert not window.icon.isNull()
+        with Image.open(Path(__file__).parents[1]/'assets'/'logo.png') as logo:
+            assert logo.mode=='RGBA' and logo.getpixel((0,0))[3]==0
+        with Image.open(Path(__file__).parents[1]/'assets'/'logo.ico') as ico:
+            assert ico.convert('RGBA').getpixel((0,0))[3]==0
         assert all(not window.nav.item(i).icon().isNull() for i in range(window.nav.count()))
         window.receive_paths([str(picture)])
         assert window.operation.currentData()=='image'
         assert {window.operation.itemData(i) for i in range(window.operation.count())}=={'image','images_pdf','archive'}
         window.receive_paths([str(video)])
-        assert window.operation.count()==1 and window.operation.currentData()=='archive'
+        assert window.input_paths()==[str(picture)] # The image section rejects a video.
+        window.navigate('Архивы');window.receive_paths([str(video)])
+        assert window.operation.currentData()=='archive' and len(window.input_paths())==2
         window.files.item(1).setSelected(True);window.remove_inputs()
+        window.navigate('Изображения')
         assert window.operation.currentData()=='image'
         window.files.item(0).setSelected(True);window.remove_inputs()
         assert window.operation.count()>10
+        window.navigate('Главная')
         window.receive_paths([str(video)])
         video_actions={window.operation.itemData(i) for i in range(window.operation.count())}
         assert window.operation.currentData()=='video'
         assert {'video','remux','mute','video_gif','audio'} <= video_actions
         assert 'image' not in video_actions and 'pdf_merge' not in video_actions
+        document=root/'paper.txt';document.write_text('text',encoding='utf-8')
+        window.navigate('Документы');window.receive_paths([str(picture),str(document)])
+        assert window.input_paths()==[str(document)]
+        assert window.operation.currentData()=='document'
         window.exiting=True;window.close()
 
 def test_source_metadata_visible_options_and_quick_favorite():
@@ -71,6 +83,8 @@ def test_source_metadata_visible_options_and_quick_favorite():
         assert (window.controls['width'].value(),window.controls['height'].value())==(512,512)
         window.controls['width'].setValue(160)
         assert window.options().width==160
+        window.size_slider.setValue(50)
+        assert 0<window.controls['target_mb'].value()<picture.stat().st_size/1048576
         window.add_favorite()
         saved=window.presets.all();assert saved[-1]['parameters']['width']==160
         window.navigate('Избранное')
@@ -94,4 +108,21 @@ def test_video_frame_comparison_uses_current_settings():
             if not window.media_preview.comparison.after.isNull():break
         assert window.media_preview.comparison.before.width()==160
         assert window.media_preview.comparison.after.width()==80
+        window.exiting=True;window.close()
+
+def test_convert_now_opens_history_with_before_after_preview():
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);picture=root/'original.png';Image.new('RGB',(120,80),'orange').save(picture)
+        window=Window(Store(root/'settings'));window.receive_paths([str(picture)])
+        window.format.setCurrentText('jpg');window.output.setText(str(root/'output'))
+        window.convert_now()
+        for _ in range(300):
+            app.processEvents();time.sleep(.01)
+            if window.current=='История' and not window.history_preview.comparison.after.isNull():break
+        assert window.current=='История'
+        assert window.pages.currentWidget() is window.history_page
+        assert window.history_list.count()==1 and window.queue_list.count()==1
+        assert not window.history_preview.comparison.before.isNull()
+        assert not window.history_preview.comparison.after.isNull()
         window.exiting=True;window.close()

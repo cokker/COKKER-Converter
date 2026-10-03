@@ -4,7 +4,7 @@ from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl, QMimeData, QPropertyAnimation, QEasingCurve, QSize, QProcess
 from PySide6.QtGui import QAction, QKeySequence, QShortcut, QDesktopServices, QPixmap, QIcon, QPainter, QColor
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QPlainTextEdit,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QFormLayout,QLayout,QLabel,QPushButton,QListWidget,QListWidgetItem,QStackedWidget,QScrollArea,QFrame,QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QInputDialog,QProgressBar,QPlainTextEdit,QSystemTrayIcon,QMenu,QDialog,QDialogButtonBox,QSplitter,QGraphicsOpacityEffect,QSizePolicy,QSlider)
 from . import __version__
 from .models import Options,Job
 from .registry import OPERATIONS,REGISTRY,category,compatible_operations,file_kind
@@ -53,6 +53,10 @@ def card():
     l=QVBoxLayout(w); l.setSpacing(12); return w,l
 
 STATUS={'waiting':'Ожидает','running':'Обработка','interrupted':'Прервано — восстановить?','done':'Готово','cancelled':'Отменено','failed':'Ошибка'}
+SECTION_KINDS={'Видео':{'video'},'Аудио':{'audio','video'},'Изображения':{'image','video'},
+               'Документы':{'document'},'PDF':{'pdf','image'},'Архивы':None,
+               'Электронные книги':{'ebook'},'VRChat':{'video','image'}}
+COMPONENTS=(('ffmpeg','FFmpeg + ffprobe','Gyan.FFmpeg'),('soffice','LibreOffice','TheDocumentFoundation.LibreOffice'),('ebook-convert','Calibre','calibre.calibre'))
 
 def size(n):
     for unit in ('Б','КБ','МБ','ГБ','ТБ'):
@@ -67,8 +71,9 @@ class Window(QMainWindow):
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
         self._source_token=0; self._preset_active=False; self._install_process=None
-        self._source_ratio=None;self._syncing_dimensions=False
-        self._install_output='';self._install_cancelled=False
+        self._source_ratio=None;self._source_bytes=0;self._syncing_dimensions=False;self._syncing_size=False
+        self._section_filter=None;self._immediate_ids=set();self._preview_token=0
+        self._install_output='';self._install_cancelled=False;self._install_tasks=[]
         self._release=None;self._update_checked=False;self._update_busy=False;self._update_status='Проверка ещё не выполнялась.'
         self._update_cancel=threading.Event();self._update_percent=0
         self.update_progress.connect(self.on_update_progress)
@@ -118,13 +123,29 @@ class Window(QMainWindow):
         quick_layout.addLayout(shortcuts);self.home_layout.addWidget(quick)
         self.home_layout.addWidget(self.tools_widget); self.home_layout.addStretch()
         self.editor,self.editor_layout=self.page(); self.build_editor()
-        self.queue_page,self.ql=self.page(); self.queue_list=Results(); self.queue_list.setMinimumHeight(350); self.ql.addWidget(self.queue_list,1)
+        self.queue_page,self.ql=self.page();self.ql.addWidget(label('Текущие задачи','title'))
+        self.queue_list=Results(); self.queue_list.setMinimumHeight(210); self.ql.addWidget(self.queue_list,1)
         self.progress=QProgressBar(); self.ql.addWidget(self.progress)
+        self.queue_preview,self.queue_preview_mode=self.build_result_preview(self.ql)
         row=QGridLayout();row.setSpacing(8)
         for i,(text,fn) in enumerate([('Открыть',self.open_result),('Папка',self.open_folder),('Копировать файлы',self.copy_results),('Копировать изображение',self.copy_image),('Повторить',self.retry),('Отменить',self.cancel),('Убрать',self.remove)]):row.addWidget(button(text,fn),i//2,i%2)
         self.ql.addLayout(row); self.ql.addWidget(button('Подробности ошибки',self.error_details)); self.queue_list.itemDoubleClicked.connect(lambda _:self.open_result())
+        self.queue_list.currentItemChanged.connect(lambda *_:self.refresh_result_preview())
+        self.history_page,self.hl=self.page();self.hl.addWidget(label('Завершённые преобразования','title'))
+        self.history_summary=label('Пока нет готовых результатов.','subtitle');self.hl.addWidget(self.history_summary)
+        self.history_list=Results();self.history_list.setMinimumHeight(220);self.hl.addWidget(self.history_list,1)
+        self.history_preview,self.history_preview_mode=self.build_result_preview(self.hl)
+        self.history_list.currentItemChanged.connect(lambda *_:self.refresh_result_preview())
+        self.history_list.itemDoubleClicked.connect(lambda _:self.open_result())
+        history_actions=QHBoxLayout();history_actions.addWidget(button('Открыть результат',self.open_result,True));history_actions.addWidget(button('Папка результата',self.open_folder));history_actions.addWidget(button('Убрать запись',self.remove));self.hl.addLayout(history_actions)
         self.extra,self.extra_layout=self.page()
         self.rebuild_tools()
+    def build_result_preview(self,layout):
+        box,body=card();body.addWidget(label('Результат · до / после','title'))
+        mode=combo(['До','После']);mode.setToolTip('Для видео и GIF переключает исходный и готовый файл. Для изображения доступно сравнение ползунком.');body.addWidget(mode)
+        preview=MediaPreview();body.addWidget(preview);layout.addWidget(box)
+        mode.currentIndexChanged.connect(lambda *_:self.refresh_result_preview())
+        return preview,mode
     def page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(4,6,12,18); layout.setSpacing(16)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
@@ -167,7 +188,16 @@ class Window(QMainWindow):
         add('flip','Отражение',combo(['none','horizontal','vertical'])); add('fps','FPS (0 = исходный)',spin(0,240,0,True)); add('speed','Скорость, ×',spin(.1,16,1,True))
         add('codec','Видеокодек',combo(['auto','libx264','libx265','libvpx-vp9','libaom-av1','mpeg4']))
         add('hardware','Кодирование CPU / GPU',combo(['cpu','auto','nvenc','amf','qsv']))
-        add('target_mb','Целевой размер, МБ (видео — оценка)',spin(0,1048576,0,True))
+        target=spin(0,1048576,0,True);target.setDecimals(6);target.setSingleStep(.1)
+        add('target_mb','Целевой размер, МБ (видео — оценка)',target)
+        self.size_slider=QSlider(Qt.Orientation.Horizontal);self.size_slider.setRange(5,100);self.size_slider.setValue(100)
+        self.size_slider.setToolTip('Перетащите для выбора целевого размера относительно исходного файла. 100% отключает ограничение. Для видео расчёт приблизительный.')
+        self.size_hint=label('Добавьте файл, чтобы выбрать размер результата.','subtitle')
+        size_row=QWidget();size_layout=QVBoxLayout(size_row);size_layout.setContentsMargins(0,0,0,0)
+        size_layout.addWidget(self.size_slider);size_layout.addWidget(self.size_hint)
+        af.addRow('Размер файла',size_row);self.size_row=size_row
+        self.size_slider.valueChanged.connect(self.size_slider_changed)
+        target.valueChanged.connect(self.target_size_changed)
         add('audio_bitrate','Аудиобитрейт, кбит/с',spin(8,512,192)); add('sample_rate','Частота аудио (0 = исходная)',spin(0,192000)); add('channels','Каналы (0 = исходные)',spin(0,2))
         add('normalize','Нормализация громкости',QCheckBox()); add('volume','Громкость, ×',spin(0,10,1,True))
         add('strip_metadata','Удалять метаданные',QCheckBox()); self.controls['strip_metadata'].setChecked(True)
@@ -176,13 +206,15 @@ class Window(QMainWindow):
         add('pages','PDF: страницы (1,3,5-8); пусто = все',QLineEdit())
         self.advanced=Section('Дополнительные настройки',advanced,lambda:self.store.get('animations',True)); self.editor_layout.addWidget(self.advanced)
         self.set_option_help()
-        self.preview_timer=QTimer(self);self.preview_timer.setSingleShot(True);self.preview_timer.timeout.connect(self.refresh_image_preview)
-        for key in ('width','height','scale_mode','no_upscale','crop','rotate','flip'):
+        self.preview_timer=QTimer(self);self.preview_timer.setSingleShot(True);self.preview_timer.timeout.connect(self.refresh_live_preview)
+        for key in ('width','height','scale_mode','no_upscale','crop','rotate','flip','fps','target_mb','start','end'):
             w=self.controls[key]
             if isinstance(w,QCheckBox):w.toggled.connect(lambda *_:self.preview_timer.start(180))
             elif isinstance(w,QComboBox):w.currentTextChanged.connect(lambda *_:self.preview_timer.start(180))
             elif isinstance(w,QLineEdit):w.textChanged.connect(lambda *_:self.preview_timer.start(180))
             else:w.valueChanged.connect(lambda *_:self.preview_timer.start(180))
+        self.format.currentTextChanged.connect(lambda *_:self.preview_timer.start(180))
+        self.quality.currentIndexChanged.connect(lambda *_:self.preview_timer.start(180))
         self.extra_file=QLineEdit(); self.extra_file.setPlaceholderText('Аудио или субтитры для выбранной операции')
         row=QHBoxLayout(); row.addWidget(self.extra_file,1); row.addWidget(button('Выбрать дорожку',self.choose_extra)); self.extra_row=QWidget(); self.extra_row.setLayout(row); self.editor_layout.addWidget(self.extra_row)
         self.hint=label('','subtitle'); self.editor_layout.addWidget(self.hint)
@@ -191,8 +223,9 @@ class Window(QMainWindow):
         row.addWidget(button('Сохранить пресет',self.save_preset),0,0)
         row.addWidget(button('★  В избранное',self.add_favorite),0,1)
         row.addWidget(button('Сбросить параметры',self.reset_options),1,0,1,2)
-        self.enqueue_button=button('Добавить в очередь   Ctrl+Enter',self.enqueue,True)
-        row.addWidget(self.enqueue_button,2,0,1,2)
+        self.enqueue_button=button('Добавить в очередь   Ctrl+Enter',self.enqueue)
+        row.addWidget(self.enqueue_button,2,0)
+        self.convert_button=button('Конвертировать сейчас',self.convert_now,True);row.addWidget(self.convert_button,2,1)
         bl.addLayout(row); self.editor_layout.addWidget(bottom); self.editor_layout.addStretch(); self.operation_changed()
     def operation_changed(self):
         if not hasattr(self,'format') or not hasattr(self,'extra_row'): return
@@ -274,6 +307,8 @@ class Window(QMainWindow):
             w.setVisible(key in visible); self.advanced_form.labelForField(w).setVisible(key in visible)
         self.advanced.setVisible(bool(visible))
         self.lock_ratio.setVisible('width' in visible and 'height' in visible)
+        self.size_row.setVisible('target_mb' in visible)
+        self.advanced_form.labelForField(self.size_row).setVisible('target_mb' in visible)
         quality_visible=op in ('image','video','burn_subtitle') and fmt not in ('png','bmp','tiff','ico')
         self.quality.setVisible(quality_visible);self.basic_form.labelForField(self.quality).setVisible(quality_visible)
         resolution_visible=op in ('image','video','burn_subtitle','images_gif','images_pdf','video_gif')
@@ -298,6 +333,25 @@ class Window(QMainWindow):
         self._syncing_dimensions=True
         try:self.controls['width'].setValue(width);self.controls['height'].setValue(height)
         finally:self._syncing_dimensions=False
+    def size_slider_changed(self,percent):
+        if self._syncing_size:return
+        self._syncing_size=True
+        try:
+            value=round(self._source_bytes*percent/100/1048576,6) if percent<100 and self._source_bytes else 0
+            self.controls['target_mb'].setValue(max(.000001,value) if value else 0)
+        finally:self._syncing_size=False
+        self.update_size_hint()
+    def target_size_changed(self,value):
+        if self._syncing_size:return
+        self._syncing_size=True
+        try:self.size_slider.setValue(max(5,min(100,round(value*1048576/self._source_bytes*100))) if value and self._source_bytes else 100)
+        finally:self._syncing_size=False
+        self.update_size_hint()
+    def update_size_hint(self):
+        value=self.controls['target_mb'].value()
+        self.size_hint.setText(f'Исходник {size(self._source_bytes)}  →  цель до {size(value*1048576)}' if value and self._source_bytes else
+                               f'Исходник {size(self._source_bytes)}  ·  без лимита размера' if self._source_bytes else
+                               'Добавьте файл, чтобы выбрать размер результата.')
     def options(self):
         o=Options(format=self.format.currentText(),quality=[82,95,55][self.quality.currentIndex()],extra_file=self.extra_file.text())
         for k,w in self.controls.items():
@@ -320,7 +374,16 @@ class Window(QMainWindow):
             else: w.setText(str(v))
         self._syncing_dimensions=False
     def choose_files(self):
-        files,_=QFileDialog.getOpenFileNames(self,'Добавить файлы'); self.add_paths(files)
+        files,_=QFileDialog.getOpenFileNames(self,'Добавить файлы',filter=self.section_file_filter()); self.add_paths(files)
+    def section_file_filter(self):
+        extensions={'Видео':'*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.m4v *.mpeg *.mpg *.ts *.mts *.flv *.3gp *.ogv',
+                    'Аудио':'*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma *.aiff *.ac3 *.mp4 *.mkv *.mov',
+                    'Изображения':'*.png *.jpg *.jpeg *.webp *.avif *.bmp *.gif *.tiff *.ico *.heic *.heif *.mp4 *.mkv *.mov',
+                    'Документы':'*.doc *.docx *.odt *.rtf *.txt *.html *.htm *.xls *.xlsx *.ods *.ppt *.pptx *.odp',
+                    'PDF':'*.pdf *.png *.jpg *.jpeg *.webp *.bmp *.tiff',
+                    'Электронные книги':'*.epub *.mobi *.azw3 *.htmlz',
+                    'VRChat':'*.gif *.mp4 *.mkv *.mov'}
+        return ('Подходящие файлы ('+extensions[self._section_filter]+')') if self._section_filter in extensions else 'Все файлы (*)'
     def choose_folder(self):
         path=QFileDialog.getExistingDirectory(self,'Добавить папку')
         if path: self.add_paths([path])
@@ -336,6 +399,19 @@ class Window(QMainWindow):
         self.async_.run(gather,self.receive_paths)
     def receive_paths(self,result):
         if isinstance(result,Exception): self.error(result); return
+        expected=SECTION_KINDS.get(self._section_filter)
+        if expected is not None:
+            accepted=[];rejected=[];current=self.input_paths()
+            for p in result:
+                candidates=compatible_operations(current+accepted+[p])
+                valid=any(op.category==self._section_filter for op in candidates)
+                if (file_kind(p) not in expected or not valid or
+                    (self._section_filter=='VRChat' and file_kind(p)=='image' and Path(p).suffix.lower()!='.gif')):
+                    rejected.append(p)
+                else:accepted.append(p)
+            result=accepted
+            if rejected:self.toast(f'Не подходят для раздела «{self._section_filter}»: {len(rejected)} файл(ов).')
+        if not result:return
         existing={self.files.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.files.count())}
         for p in result:
             if p not in existing:
@@ -357,7 +433,8 @@ class Window(QMainWindow):
         if not force and path==getattr(self,'_source_path',None):return
         self._source_path=path;self._source_token+=1;token=self._source_token
         self.media_preview.set_file(path)
-        if not path:return
+        if not path:
+            self._source_bytes=0;self.update_size_hint();return
         self.media_preview.details.setText('Читаю параметры файла…')
         def done(info):
             if token!=self._source_token:return
@@ -372,6 +449,7 @@ class Window(QMainWindow):
             if info.get('channels'):bits.append(f"{info['channels']} канал(а)")
             if info.get('pages'):bits.append(f"{info['pages']} стр.")
             self.media_preview.details.setText('  •  '.join(bits))
+            self._source_bytes=info['bytes'];self.update_size_hint()
             if info.get('width') and info.get('height'):
                 self._source_ratio=info['width']/info['height']
             else:self._source_ratio=None
@@ -383,6 +461,12 @@ class Window(QMainWindow):
                 self._syncing_dimensions=False
             self.preview_timer.start(180)
         self.async_.run(lambda:source_info(path),done)
+    def refresh_live_preview(self):
+        path=getattr(self,'_source_path',None)
+        if not path:return
+        if file_kind(path)=='image':self.refresh_image_preview()
+        elif file_kind(path)=='video' and self.operation.currentData() in ('video','burn_subtitle','video_gif'):
+            self.compare_video_frame()
     def refresh_image_preview(self):
         path=getattr(self,'_source_path',None)
         if not path or file_kind(path)!='image' or Path(path).suffix.lower()=='.gif':return
@@ -422,7 +506,8 @@ class Window(QMainWindow):
         position=self.media_preview.player.position()/1000 if self.media_preview.player else 0
         position=max(position,o.start)
         if o.end:position=min(position,max(o.start,o.end-.1))
-        self.compare_video_button.setEnabled(False);self.toast('Готовлю сравнение текущего кадра…')
+        self._preview_token+=1;token=self._preview_token
+        self.compare_video_button.setEnabled(False)
         def prepare():
             from tempfile import TemporaryDirectory
             ff=executable('ffmpeg')
@@ -439,6 +524,7 @@ class Window(QMainWindow):
                 return before.read_bytes(),after.read_bytes()
         def show(result):
             self.compare_video_button.setEnabled(True)
+            if token!=self._preview_token or path!=getattr(self,'_source_path',None):return
             if isinstance(result,Exception):self.error(result);return
             before=QPixmap();after=QPixmap();before.loadFromData(result[0]);after.loadFromData(result[1])
             self.media_preview.show_video_comparison(before,after)
@@ -460,7 +546,9 @@ class Window(QMainWindow):
         else:self.input_summary.setText('Добавь файлы — покажу доступные действия.')
         count=1 if REGISTRY[preferred].multiple else len(paths)
         self.enqueue_button.setText(f'Добавить в очередь: {count} задач(и)   Ctrl+Enter' if paths else 'Добавить в очередь   Ctrl+Enter')
-        if paths:self.select_section(REGISTRY[preferred].category)
+        if paths:
+            self.select_section(REGISTRY[preferred].category)
+            self._section_filter=REGISTRY[preferred].category
         self.operation_changed();self.rebuild_tools(self.search.text())
     def choose_extra(self):
         p,_=QFileDialog.getOpenFileName(self,'Выбрать дорожку')
@@ -468,7 +556,7 @@ class Window(QMainWindow):
     def choose_output(self):
         p=QFileDialog.getExistingDirectory(self,'Папка результата',self.output.text())
         if p:self.output.setText(p);self.store.set('output',p)
-    def enqueue(self):
+    def enqueue(self,immediate=False):
         try:
             paths=self.input_paths()
             if not paths: self.choose_files(); return
@@ -478,13 +566,18 @@ class Window(QMainWindow):
             if op.backend in ('ffmpeg','soffice','ebook-convert') and not executable(op.backend): raise ValueError('Нужный компонент не установлен. Откройте Настройки → Компоненты.')
             if not self.output.text().strip(): raise ValueError('Выберите папку результата.')
             jobs=[Job(paths if op.multiple else [p],op.id,asdict(o),self.output.text()) for p in (paths[:1] if op.multiple else paths)]
-            self.queue.add(jobs); self.navigate('Очередь')
+            if immediate:self._immediate_ids.update(j.id for j in jobs)
+            self.queue.add(jobs)
+            if immediate:self.toast(f'Обработка началась: {len(jobs)} задач(и). Результат появится здесь после завершения.')
+            else:self.navigate('Очередь')
         except Exception as e:self.error(e)
+    def convert_now(self):self.enqueue(immediate=True)
     def set_operation(self,id):
         index=self.operation.findData(id)
         if index<0:
             self.toast('Это действие не подходит для загруженных файлов. Удалите их или выберите доступное действие.');return
-        self._requested_operation=id;self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
+        self._requested_operation=id;self._section_filter=REGISTRY[id].category
+        self.operation.setCurrentIndex(index);self.show_page(self.editor);self.heading.setText(REGISTRY[id].category)
         self.select_section(REGISTRY[id].category)
     def select_section(self,name):
         for row in range(self.nav.count()):
@@ -505,12 +598,20 @@ class Window(QMainWindow):
     def navigate(self,name):
         if not name:return
         self.current=name; self.heading.setText('Начнём с файла' if name=='Главная' else name)
-        if name=='Главная': self.show_page(self.home)
-        elif name in ('Очередь','История'): self.show_page(self.queue_page); self.refresh_queue()
+        if name=='Главная':self._section_filter=None;self.show_page(self.home)
+        elif name=='Очередь': self.show_page(self.queue_page); self.refresh_queue();self.refresh_result_preview()
+        elif name=='История': self.show_page(self.history_page); self.refresh_queue();self.refresh_result_preview()
         elif name=='Избранное': self.show_presets()
         elif name=='Настройки': self.show_settings()
         elif name=='О программе': self.show_about()
         else:
+            if name in SECTION_KINDS:
+                self._section_filter=name
+                paths=self.input_paths();expected=SECTION_KINDS[name]
+                if paths and expected is not None and not any(o.category==name for o in compatible_operations(paths)):
+                    self.files.clear();self._source_path=None;self.media_preview.set_file(None)
+                    self.refresh_compatible();self._section_filter=name
+                    self.toast('Список входных файлов очищен для нового раздела. Исходные файлы не удалены.')
             op=next((o for o in compatible_operations(self.input_paths()) if o.category==name),None)
             if op:self.set_operation(op.id)
             elif self.input_paths():
@@ -518,6 +619,9 @@ class Window(QMainWindow):
                 self.select_section(self.current);self.show_page(self.editor)
                 self.heading.setText('Подготовка файлов')
                 self.toast('Для загруженных файлов в этом разделе нет подходящих действий.')
+            else:
+                op=next((o for o in OPERATIONS if o.category==name),None)
+                if op:self.set_operation(op.id)
     def rebuild_tools(self,query=''):
         while self.tools_grid.count():
             item=self.tools_grid.takeAt(0)
@@ -533,28 +637,64 @@ class Window(QMainWindow):
     def clear_extra(self):
         while self.extra_layout.count():
             item=self.extra_layout.takeAt(0)
-            if item.widget():item.widget().deleteLater()
+            if item.widget():item.widget().hide();item.widget().deleteLater()
+            if item.layout():
+                while item.layout().count():
+                    child=item.layout().takeAt(0)
+                    if child.widget():child.widget().hide();child.widget().deleteLater()
+                item.layout().deleteLater()
         self.show_page(self.extra)
     def selected_jobs(self):
-        ids={i.data(Qt.ItemDataRole.UserRole) for i in self.queue_list.selectedItems()}; return [j for j in self.queue.jobs if j.id in ids]
+        listing=self.history_list if self.current=='История' else self.queue_list
+        ids={i.data(Qt.ItemDataRole.UserRole) for i in listing.selectedItems()}
+        if not ids and listing.currentItem():ids={listing.currentItem().data(Qt.ItemDataRole.UserRole)}
+        return [j for j in self.queue.jobs if j.id in ids]
     def refresh_queue(self):
-        selected={i.data(Qt.ItemDataRole.UserRole) for i in self.queue_list.selectedItems()}
-        scroll=self.queue_list.verticalScrollBar().value(); self.queue_list.clear()
         jobs=list(self.queue.jobs)
-        shown=[j for j in jobs if j.status=='done'] if self.current=='История' else jobs
-        for j in shown:
-            text=f'{STATUS[j.status]}'+(f'   {int(j.progress*100)}%' if j.status=='running' else '')+f'    {Path(j.inputs[0]).name}\n{REGISTRY[j.operation].label}'
-            if j.status=='done':
-                change=(1-j.after/j.before)*100 if j.before else 0
-                text+=f'   •   {size(j.before)} → {size(j.after)}   ({change:+.1f}% экономии)   •   {j.elapsed:.1f} с'
-            elif j.status=='failed':text+='   •   '+j.error.splitlines()[-1][:140]
-            item=QListWidgetItem(icon_for(REGISTRY[j.operation].category),text); item.setData(Qt.ItemDataRole.UserRole,j.id); item.setData(Qt.ItemDataRole.UserRole+1,j.output if j.status=='done' else ''); self.queue_list.addItem(item); item.setSelected(j.id in selected)
-        self.queue_list.verticalScrollBar().setValue(scroll)
+        signature=tuple((j.id,j.status,round(j.progress,2),j.output,j.after) for j in jobs)
+        if signature!=getattr(self,'_queue_signature',None):
+            self._queue_signature=signature
+            for listing,shown in ((self.queue_list,[j for j in jobs if j.status!='done']+[j for j in jobs if j.status=='done'][-3:]),
+                                  (self.history_list,[j for j in reversed(jobs) if j.status=='done'])):
+                selected={i.data(Qt.ItemDataRole.UserRole) for i in listing.selectedItems()}
+                current=listing.currentItem().data(Qt.ItemDataRole.UserRole) if listing.currentItem() else None
+                scroll=listing.verticalScrollBar().value();listing.blockSignals(True);listing.clear()
+                for j in shown:
+                    text=f'{STATUS[j.status]}'+(f'   {int(j.progress*100)}%' if j.status=='running' else '')+f'    {Path(j.inputs[0]).name}\n{REGISTRY[j.operation].label}'
+                    if j.status=='done':
+                        change=(1-j.after/j.before)*100 if j.before else 0
+                        text+=f'   •   {size(j.before)} → {size(j.after)}   ({change:+.1f}% экономии)   •   {j.elapsed:.1f} с'
+                    elif j.status=='failed':text+='   •   '+j.error.splitlines()[-1][:140]
+                    item=QListWidgetItem(icon_for(REGISTRY[j.operation].category),text)
+                    item.setData(Qt.ItemDataRole.UserRole,j.id)
+                    item.setData(Qt.ItemDataRole.UserRole+1,j.output if j.status=='done' else '')
+                    listing.addItem(item);item.setSelected(j.id in selected)
+                    if j.id==current:listing.setCurrentItem(item)
+                if listing.count() and not listing.currentItem():listing.setCurrentRow(0)
+                listing.verticalScrollBar().setValue(scroll);listing.blockSignals(False)
+            finished=[j for j in jobs if j.status=='done']
+            saved=sum(j.before-j.after for j in finished)
+            self.history_summary.setText(f'{len(finished)} готово  ·  {"сэкономлено " + size(saved) if saved>=0 else "размер увеличился на " + size(-saved)}  ·  дважды щёлкните результат для открытия' if finished else 'Пока нет готовых результатов.')
+            self.refresh_result_preview()
         active=[j for j in jobs if j.status in ('waiting','running')]; complete=sum(j.status=='done' for j in jobs)
         pct=round(sum(j.progress if j.status=='running' else 1 if j.status=='done' else 0 for j in jobs)/max(len(jobs),1)*100)
         self.progress.setValue(pct); self.progress.setFormat(f'{complete} / {len(jobs)} готовы  •  {pct}%')
         self.setWindowTitle((f'{pct}% — ' if active else '')+'COKKER Converter')
         if hasattr(self,'tray'):self.tray.setToolTip(f'COKKER Converter\n{len(active)} задач • {pct}%' if active else 'COKKER Converter — готов к работе')
+    def refresh_result_preview(self):
+        listing=self.history_list if self.current=='История' else self.queue_list
+        preview,mode=(self.history_preview,self.history_preview_mode) if self.current=='История' else (self.queue_preview,self.queue_preview_mode)
+        item=listing.currentItem()
+        job=next((j for j in self.queue.jobs if item and j.id==item.data(Qt.ItemDataRole.UserRole)),None)
+        if not job:preview.set_file(None);mode.hide();return
+        before=job.inputs[0];after=job.output if job.status=='done' and Path(job.output).is_file() else None
+        kind=file_kind(before)
+        comparison=bool(after and kind=='image' and Path(before).suffix.lower()!='.gif' and file_kind(after)=='image' and Path(after).suffix.lower()!='.gif')
+        mode.setVisible(bool(after and not comparison))
+        if comparison:
+            if preview.path!=before:preview.set_file(before)
+            preview.show_pixmap(QPixmap(after))
+        else:preview.set_file(after if after and mode.currentIndex()==1 else before)
     def retry(self):self.queue.retry([j.id for j in self.selected_jobs()])
     def cancel(self):self.queue.cancel([j.id for j in self.selected_jobs()])
     def remove(self):self.queue.remove([j.id for j in self.selected_jobs()])
@@ -577,6 +717,15 @@ class Window(QMainWindow):
     def completed(self,id):
         j=next((j for j in self.queue.jobs if j.id==id),None)
         if j and self.store.get('notifications',True) and self.tray.isVisible():self.tray.showMessage('COKKER Converter',STATUS[j.status]+' — '+Path(j.inputs[0]).name)
+        if id in self._immediate_ids:
+            self._immediate_ids.discard(id)
+            if j and j.status=='done':
+                self.navigate('История')
+                for i in range(self.history_list.count()):
+                    if self.history_list.item(i).data(Qt.ItemDataRole.UserRole)==id:
+                        self.history_list.setCurrentRow(i);self.refresh_result_preview();break
+                self.toast('Результат готов — откройте его здесь или сравните с исходником.')
+            elif j:self.toast(f'Обработка не завершена: {j.error}')
     def recovery(self):
         ids=[j.id for j in self.queue.jobs if j.status=='interrupted']
         if QMessageBox.question(self,'Восстановление',f'Найдено незавершённых задач: {len(ids)}. Запустить заново?')==QMessageBox.StandardButton.Yes:self.queue.retry(ids)
@@ -659,26 +808,36 @@ class Window(QMainWindow):
                 auto.blockSignals(True);auto.setChecked(self.store.get('autostart',False));auto.blockSignals(False);self.error(e)
         auto.toggled.connect(save_startup);tray.toggled.connect(save_startup);bl.addWidget(auto);bl.addWidget(tray);self.extra_layout.addWidget(box)
         box,bl=card();bl.addWidget(label('Компоненты','title'))
-        bl.addWidget(label('Нажмите «Установить»: WinGet загрузит компонент и примет соглашения источника и пакета. Может потребоваться подтверждение Windows. FFmpeg содержит также ffprobe.','subtitle'))
-        for name,title,package in [('ffmpeg','FFmpeg + ffprobe','Gyan.FFmpeg'),('soffice','LibreOffice (soffice)','TheDocumentFoundation.LibreOffice'),('ebook-convert','Calibre (ebook-convert)','calibre.calibre')]:
-            p=executable(name);row=QHBoxLayout();row.addWidget(label(title+'  —  '+('найден' if p else 'не установлен')),1)
-            if p: row.addWidget(label(p,'subtitle'))
-            elif os.name=='nt' and shutil.which('winget'):
-                install=button('Установить',lambda n=name,t=title,pkg=package:self.install_component(n,t,pkg))
-                install.setEnabled(self._install_process is None);row.addWidget(install)
-            else:row.addWidget(button('Сайт загрузки',lambda n=name:QDesktopServices.openUrl(QUrl(URLS.get(n,URLS['ffmpeg'])))))
-            bl.addLayout(row)
+        bl.addWidget(label('Установка и удаление выполняются отдельно или пакетом. WinGet может запросить подтверждение Windows. Встроенные FFmpeg и ffprobe можно убрать из папки программы; обновление Portable вернёт их.','subtitle'))
+        for name,title,package in COMPONENTS:
+            p=executable(name);entry=QWidget();entry.setObjectName('componentRow');row=QHBoxLayout(entry);row.setContentsMargins(0,3,0,3)
+            details=QVBoxLayout();details.addWidget(label(title+'  ·  '+('установлен' if p else 'не установлен')))
+            if p:
+                path_label=label(p,'subtitle');path_label.setToolTip(p);details.addWidget(path_label)
+            row.addLayout(details,1)
+            if os.name=='nt' and (shutil.which('winget') or p and self.is_bundled_component(p)):
+                action='remove' if p else 'install'
+                control=button('Удалить' if p else 'Установить',lambda n=name:self.manage_components('remove' if executable(n) else 'install',[n]))
+                control.setEnabled(self._install_process is None and not self._install_tasks and not self.queue.active)
+                row.addWidget(control)
+            elif not p:row.addWidget(button('Сайт загрузки',lambda n=name:QDesktopServices.openUrl(QUrl(URLS.get(n,URLS['ffmpeg'])))))
+            bl.addWidget(entry)
+        bulk=QHBoxLayout();all_install=button('Установить недостающие',lambda:self.manage_components('install'))
+        all_remove=button('Удалить установленные',lambda:self.manage_components('remove'))
+        all_install.setEnabled(os.name=='nt' and bool(shutil.which('winget')) and not self._install_process and not self._install_tasks and not self.queue.active)
+        all_remove.setEnabled(os.name=='nt' and not self._install_process and not self._install_tasks and not self.queue.active)
+        bulk.addWidget(all_install);bulk.addWidget(all_remove);bl.addLayout(bulk)
         if not shutil.which('winget') and os.name=='nt':bl.addWidget(label('WinGet не найден. Установите «Установщик приложений» Windows или используйте сайт компонента.','subtitle'))
-        if self._install_process:
-            bl.addWidget(label('Идёт установка: '+self._install_name,'subtitle'))
+        if self._install_process or self._install_tasks:
+            bl.addWidget(label('Работа с компонентами: '+getattr(self,'_install_name','подготовка'),'subtitle'))
             self.install_progress=QProgressBar();self.install_progress.setRange(0,0);self.install_progress.setFormat('Загрузка и установка…');bl.addWidget(self.install_progress)
             bl.addWidget(button('Отменить установку',self.cancel_install))
         elif getattr(self,'_install_status',''):bl.addWidget(label(self._install_status,'subtitle'))
-        if self._install_process or self._install_output:
+        if self._install_process or self._install_tasks or self._install_output:
             self.install_log=QPlainTextEdit();self.install_log.setReadOnly(True);self.install_log.setMaximumHeight(115)
             self.install_log.setPlaceholderText('Здесь появится ход установки и сообщение об ошибке.')
             self.install_log.setPlainText(self._install_output)
-            if self._install_process:bl.addWidget(self.install_log)
+            if self._install_process or self._install_tasks:bl.addWidget(self.install_log)
             else:bl.addWidget(Section('Подробности установки',self.install_log,lambda:self.store.get('animations',True)))
         self.extra_layout.addWidget(box)
         box,bl=card();bl.addWidget(label('Обновление программы','title'))
@@ -699,50 +858,88 @@ class Window(QMainWindow):
         self.extra_layout.addWidget(label('Файлы обрабатываются локально. Проверка версии обращается к GitHub при открытии настроек; загрузка обновления или компонентов начинается только по кнопке.','subtitle'));self.extra_layout.addStretch()
         if not self._update_checked and os.name=='nt' and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
             self._update_checked=True;QTimer.singleShot(0,self.check_update)
-    def install_component(self,name,title,package):
-        if self._install_process:return
-        binary=shutil.which('winget')
-        if os.name!='nt' or not binary:self.toast('Для установки нужен WinGet в Windows.');return
-        self._install_name=title;self._install_status='';self._install_output='';self._install_cancelled=False;process=QProcess(self)
-        self._install_process=process
-        process.setProgram(binary)
-        process.setArguments(['install','--id',package,'--exact','--source','winget','--accept-source-agreements','--accept-package-agreements','--disable-interactivity'])
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        output=[]
+    def is_bundled_component(self,path):
+        base=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parent.parent
+        return Path(path).resolve().parent==(base/'components').resolve()
+    def manage_components(self,action,names=None):
+        if self._install_process or self._install_tasks:return
+        if self.queue.active:self.toast('Сначала дождитесь завершения конвертации.');return
+        if os.name!='nt':self.toast('Управление компонентами доступно в Windows.');return
+        names=set(names or [name for name,_,_ in COMPONENTS])
+        tasks=[(action,name,title,package) for name,title,package in COMPONENTS if name in names and bool(executable(name))==(action=='remove')]
+        if not tasks:self.toast('Все компоненты уже в нужном состоянии.');return
+        if action=='remove':
+            titles=', '.join(t[2] for t in tasks)
+            if QMessageBox.question(self,'Удаление компонентов',f'Удалить: {titles}?\nНекоторые форматы станут недоступны, пока компоненты не установлены снова.')!=QMessageBox.StandardButton.Yes:return
+        if any(not (action=='remove' and self.is_bundled_component(executable(name))) for _,name,_,_ in tasks) and not shutil.which('winget'):
+            self.toast('Для системных компонентов нужен WinGet.');return
+        self._install_tasks=tasks;self._install_output='';self._install_cancelled=False;self._install_status='';self.start_next_component()
+    def start_next_component(self):
+        if self._install_cancelled:
+            self._install_tasks=[];self._install_process=None;self._install_status='Операция с компонентами отменена.'
+            if self.current=='Настройки':self.show_settings()
+            return
+        if not self._install_tasks:
+            self._install_status='Работа с компонентами завершена. '+self._install_status
+            if self.current=='Настройки':self.show_settings()
+            self.toast(self._install_status);return
+        action,name,title,package=self._install_tasks.pop(0);self._install_name=title
+        path=executable(name)
+        if action=='remove' and path and self.is_bundled_component(path):
+            try:
+                for filename in (('ffmpeg.exe','ffprobe.exe') if name=='ffmpeg' else (Path(path).name,)):
+                    (Path(path).parent/filename).unlink(missing_ok=True)
+                self._install_status=f'{title}: встроенные файлы удалены.'
+                self._install_output+=self._install_status+'\n'
+            except OSError as error:self._install_status=f'{title}: не удалось удалить встроенные файлы: {error}'
+            self.start_next_component();return
+        process=QProcess(self);self._install_process=process
+        process.setProgram(shutil.which('winget'))
+        args=['uninstall' if action=='remove' else 'install','--id',package,'--exact','--source','winget','--accept-source-agreements','--disable-interactivity']
+        if action=='install':args+=['--accept-package-agreements']
+        process.setArguments(args);process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._install_output+=f'\n{title}: {"установка" if action=="install" else "удаление"}…\n'
         def collect():
             data=bytes(process.readAllStandardOutput()).decode('utf-8','replace')
             if data:
-                output.append(data[-3000:]);output[:]=output[-12:]
-                self._install_output=(''.join(output)).replace('\r','\n')[-5000:]
+                self._install_output=(self._install_output+data.replace('\r','\n'))[-6000:]
                 if self.current=='Настройки' and hasattr(self,'install_log'):
                     self.install_log.setPlainText(self._install_output)
                     bar=self.install_log.verticalScrollBar();bar.setValue(bar.maximum())
         process.readyReadStandardOutput.connect(collect)
         def finish(code,status):
+            if self._install_process is not process:return
             collect();self._install_process=None;process.deleteLater()
-            found=executable(name)
-            if self._install_cancelled:self._install_status=f'Установка {title} отменена.'
-            elif code==0 and found:self._install_status=f'{title} установлен и обнаружен: {found}'
-            elif code==0:self._install_status=f'{title} установлен. Перезапустите приложение, чтобы обновился системный PATH.'
+            if self._install_cancelled:self._install_status=f'{title}: операция отменена.'
+            elif code==0:self._install_status=f'{title}: команда завершена. '+('Проверьте статус после перезапуска Windows.' if action=='install' and not executable(name) else '')
             else:
-                detail=''.join(output).strip().splitlines()
-                self._install_status=f'Не удалось установить {title} (код {code}). '+(detail[-1][:180] if detail else 'Проверьте подключение и права Windows.')
-            if self.current=='Настройки':self.show_settings()
-            self.toast(self._install_status)
+                detail=self._install_output.strip().splitlines()
+                self._install_status=f'{title}: ошибка {code}. '+(detail[-1][:160] if detail else process.errorString())
+            self._install_output+='\n'+self._install_status+'\n'
+            self.start_next_component()
         process.finished.connect(finish)
-        process.errorOccurred.connect(lambda error:self.toast('Не удалось запустить WinGet: '+process.errorString()))
-        process.start();self.show_settings()
+        process.errorOccurred.connect(lambda error:finish(-1,None) if error==QProcess.ProcessError.FailedToStart else None)
+        process.start()
+        if self.current=='Настройки':self.show_settings()
     def cancel_install(self):
+        self._install_tasks=[]
         process=self._install_process
-        if not process:return
         self._install_cancelled=True
+        if not process:
+            self._install_status='Операция отменена.';self.show_settings();return
         if os.name=='nt' and process.processId():
             subprocess.Popen(['taskkill','/PID',str(process.processId()),'/T','/F'],creationflags=subprocess.CREATE_NO_WINDOW)
         else:process.kill()
-        self._install_status='Отмена установки…'
+        self._install_status='Отмена операции…'
     def show_about(self):
-        self.clear_extra();self.extra_layout.addWidget(label('COKKER Converter  '+__version__,'title'));self.extra_layout.addWidget(label('Локальная обработка видео, аудио, изображений и документов.\nПредварительная версия: проверяйте результат перед удалением исходников.'))
-        self.extra_layout.addWidget(button('GitHub',lambda:QDesktopServices.openUrl(QUrl(REPO))));self.extra_layout.addWidget(button('VRChat: открыть сайт для загрузки Emoji',lambda:QDesktopServices.openUrl(QUrl('https://vrchat.com/home'))));self.extra_layout.addStretch()
+        self.clear_extra();box,body=card();body.addWidget(label('COKKER Converter  '+__version__,'title'))
+        body.addWidget(label('Локальная обработка видео, аудио, изображений и документов. Предварительная версия: проверяйте результат перед удалением исходников.','subtitle'))
+        body.addWidget(label('Все преобразования выполняются на вашем компьютере. Обновления проверяются через GitHub.','subtitle'))
+        self.extra_layout.addWidget(box)
+        links,layout=card();layout.addWidget(label('Ссылки','title'))
+        layout.addWidget(button('Исходный код и выпуски на GitHub',lambda:QDesktopServices.openUrl(QUrl(REPO))))
+        layout.addWidget(button('VRChat: сайт для загрузки Emoji',lambda:QDesktopServices.openUrl(QUrl('https://vrchat.com/home'))))
+        self.extra_layout.addWidget(links);self.extra_layout.addStretch()
     def apply_theme(self):
         theme=self.store.get('theme','dark')
         if theme=='system':theme='dark' if QApplication.styleHints().colorScheme()==Qt.ColorScheme.Dark else 'light'

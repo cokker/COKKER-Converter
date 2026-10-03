@@ -80,14 +80,27 @@ class Section(QWidget):
         self.anim.finished.connect(finish);self.anim.start()
 
 class AnimatedButton(QPushButton):
-    """Subtle accent line on hover, without repolishing the whole window."""
+    """Hover underline and brief animated press feedback."""
     def __init__(self,text='',parent=None,animate=lambda:True):
-        super().__init__(text,parent);self._accent=0.0;self.animate=animate
+        super().__init__(text,parent);self._accent=0.0;self._press=0.0;self.animate=animate
         self._animation=QPropertyAnimation(self,b'accent',self)
         self._animation.setDuration(150);self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._press_animation=QPropertyAnimation(self,b'pressLevel',self)
+        self._press_animation.setDuration(230);self._press_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
     def get_accent(self): return self._accent
     def set_accent(self,value): self._accent=value;self.update()
     accent=Property(float,get_accent,set_accent)
+    def get_press(self):return self._press
+    def set_press(self,value):self._press=value;self.update()
+    pressLevel=Property(float,get_press,set_press)
+    def mousePressEvent(self,event):
+        if self.isEnabled():self._press_animation.stop();self.set_press(1)
+        super().mousePressEvent(event)
+    def mouseReleaseEvent(self,event):
+        super().mouseReleaseEvent(event)
+        if self.animate():
+            self._press_animation.setStartValue(self._press);self._press_animation.setEndValue(0);self._press_animation.start()
+        else:self.set_press(0)
     def enterEvent(self,event):
         super().enterEvent(event);self.transition(1)
     def leaveEvent(self,event):
@@ -98,6 +111,11 @@ class AnimatedButton(QPushButton):
         self._animation.setStartValue(self._accent);self._animation.setEndValue(target);self._animation.start()
     def paintEvent(self,event):
         super().paintEvent(event)
+        if self._press:
+            painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            shade=QColor('#ffffff');shade.setAlphaF(.12*self._press)
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(shade)
+            painter.drawRoundedRect(self.rect().adjusted(2,2,-2,-2),9,9)
         if self._accent and self.objectName()!='primary':
             painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             tint=QColor('#ff9c56');tint.setAlphaF(.75*self._accent)

@@ -1,6 +1,6 @@
 # Сборка Windows x64
 
-В репозитории workflow `Windows x64` на `windows-2022` запускает `pytest`, собирает PyInstaller `onedir`, устанавливает через Chocolatey FFmpeg и Inno Setup, создаёт Portable ZIP и Setup EXE. Тег вида `v0.9.4` запускает публикацию GitHub prerelease лишь после успешной проверки и сборки. Если workflow завершился с ошибкой, не считайте файлы выпущенными. Проверьте совпадение номера версии в `cokker/__init__.py` и `packaging/setup.iss`.
+В репозитории workflow `Windows x64` на `windows-2022` запускает `pytest`, собирает PyInstaller `onedir`, устанавливает через Chocolatey FFmpeg и Inno Setup, создаёт Portable ZIP и Setup EXE. Тег вида `v0.9.5` запускает публикацию GitHub prerelease лишь после успешной проверки и сборки. Если workflow завершился с ошибкой, не считайте файлы выпущенными. Проверьте совпадение номера версии в `cokker/__init__.py` и `packaging/setup.iss`.
 
 Локально: Python 3.12 x64, FFmpeg/ffprobe в PATH, Inno Setup 6. Выполните из корня:
 
