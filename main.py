@@ -49,10 +49,11 @@ def main():
                 if window.input_paths():break
                 time.sleep(.01)
             trace('add:received:'+str(window.input_paths()))
-            if window.input_paths()!=[str(image)]:raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
+            paths=window.input_paths()
+            if len(paths)!=1 or not Path(paths[0]).samefile(image):raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
             trace('operation:'+str(window.operation.currentData())+':'+str(window.operation.count()))
             if window.operation.currentData()!='image': raise RuntimeError('Автоопределение PNG не работает')
-            trace('window:closing');window.exiting=True;window.close();trace('window:closed')
+            trace('window:closing');window.exiting=True;window.close();window.store.close();trace('window:closed')
             trace('image:convert');Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)));trace('image:converted')
             if not executable('ffmpeg') or not executable('ffprobe'): raise RuntimeError('FFmpeg отсутствует в сборке')
             source=folder/'source.mp4'
