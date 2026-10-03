@@ -33,20 +33,16 @@ def main():
             if not window.icon.availableSizes(): raise RuntimeError('Логотип не включён в сборку')
             window.navigate('Изображения')
             create_dialog=window.files_dialog
-            dialog_test={'non_native':False,'dialog':None}
             def test_dialog():
                 dialog=create_dialog()
-                dialog.setDirectory(str(folder));dialog.selectFile(image.name)
-                dialog_test['dialog']=dialog
-                return dialog
+                if not dialog.testOption(QFileDialog.Option.DontUseNativeDialog):
+                    raise RuntimeError('Диалог файлов должен работать без системного окна Windows')
+                dialog.deleteLater()
+                class SelectedFile:
+                    def exec(self): return QDialog.DialogCode.Accepted
+                    def selectedFiles(self): return [str(image)]
+                return SelectedFile()
             window.files_dialog=test_dialog
-            def select_test_file():
-                dialog=dialog_test['dialog']
-                if isinstance(dialog,QFileDialog):
-                    dialog_test['non_native']=dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
-                    dialog.done(QDialog.DialogCode.Accepted)
-            QTimer.singleShot(100,select_test_file)
-            QTimer.singleShot(5000,lambda:dialog_test['dialog'].reject() if isinstance(dialog_test['dialog'],QFileDialog) else None)
             add=next(b for b in window.editor.findChildren(QPushButton) if b.text()=='Добавить')
             add.click()
             import time
@@ -54,7 +50,7 @@ def main():
                 app.processEvents()
                 if window.input_paths():break
                 time.sleep(.01)
-            if not dialog_test['non_native'] or window.input_paths()!=[str(image)]:raise RuntimeError('Кнопка «Добавить» не загрузила PNG через безопасный диалог')
+            if window.input_paths()!=[str(image)]:raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
             if window.operation.currentData()!='image' or window.operation.count()!=3: raise RuntimeError('Автоопределение PNG не работает')
             window.exiting=True;window.close()
             Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)))
