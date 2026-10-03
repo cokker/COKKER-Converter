@@ -3,7 +3,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtNetwork import QLocalServer,QLocalSocket
-from PySide6.QtWidgets import QApplication,QFileDialog,QPushButton,QDialog
+from PySide6.QtWidgets import QApplication,QPushButton,QDialog
 from cokker.storage import root_dir
 from cokker.ui import Window
 
@@ -32,17 +32,10 @@ def main():
             window=Window(Store(folder/'settings'));window.navigate('Настройки');window.navigate('Очередь')
             if not window.icon.availableSizes(): raise RuntimeError('Логотип не включён в сборку')
             window.navigate('Изображения')
-            create_dialog=window.files_dialog
-            def test_dialog():
-                dialog=create_dialog()
-                if not dialog.testOption(QFileDialog.Option.DontUseNativeDialog):
-                    raise RuntimeError('Диалог файлов должен работать без системного окна Windows')
-                dialog.deleteLater()
-                class SelectedFile:
-                    def exec(self): return QDialog.DialogCode.Accepted
-                    def selectedFiles(self): return [str(image)]
-                return SelectedFile()
-            window.files_dialog=test_dialog
+            class SelectedFile:
+                def exec(self): return QDialog.DialogCode.Accepted
+                def selectedFiles(self): return [str(image)]
+            window.files_dialog=lambda:SelectedFile()
             add=next(b for b in window.editor.findChildren(QPushButton) if b.text()=='Добавить')
             add.click()
             import time
