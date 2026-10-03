@@ -1,9 +1,9 @@
-import sys, os, json, logging, hashlib
+import sys, os, json, logging, hashlib, faulthandler
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtNetwork import QLocalServer,QLocalSocket
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication,QFileDialog,QPushButton,QDialog
 from cokker.storage import root_dir
 from cokker.ui import Window
 
@@ -31,7 +31,29 @@ def main():
             folder=Path(d);image=folder/'input.png';Image.new('RGB',(100,80),(255,120,35)).save(image)
             window=Window(Store(folder/'settings'));window.navigate('Настройки');window.navigate('Очередь')
             if not window.icon.availableSizes(): raise RuntimeError('Логотип не включён в сборку')
-            window.receive_paths([str(image)])
+            window.navigate('Изображения')
+            create_dialog=window.files_dialog
+            def test_dialog():
+                dialog=create_dialog()
+                dialog.setDirectory(str(folder));dialog.selectFile(image.name)
+                return dialog
+            window.files_dialog=test_dialog
+            dialog_test={'non_native':False}
+            def select_test_file():
+                dialog=app.activeModalWidget()
+                if isinstance(dialog,QFileDialog):
+                    dialog_test['non_native']=dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
+                    dialog.done(QDialog.DialogCode.Accepted)
+            QTimer.singleShot(100,select_test_file)
+            QTimer.singleShot(5000,lambda:app.activeModalWidget().reject() if isinstance(app.activeModalWidget(),QFileDialog) else None)
+            add=next(b for b in window.editor.findChildren(QPushButton) if b.text()=='Добавить')
+            add.click()
+            import time
+            for _ in range(200):
+                app.processEvents()
+                if window.input_paths():break
+                time.sleep(.01)
+            if not dialog_test['non_native'] or window.input_paths()!=[str(image)]:raise RuntimeError('Кнопка «Добавить» не загрузила PNG через безопасный диалог')
             if window.operation.currentData()!='image' or window.operation.count()!=3: raise RuntimeError('Автоопределение PNG не работает')
             window.exiting=True;window.close()
             Engine().convert(Job([str(image)],'image',Options(format='webp').__dict__,str(folder)))
@@ -42,6 +64,8 @@ def main():
         return 0
     root=root_dir();root.mkdir(parents=True,exist_ok=True);logs=root/'logs';logs.mkdir(exist_ok=True)
     handler=RotatingFileHandler(logs/'app.log',maxBytes=10*1024*1024,backupCount=4,encoding='utf-8');logging.basicConfig(level=logging.INFO,handlers=[handler])
+    crash_log=open(logs/'crash.log','a',encoding='utf-8')
+    faulthandler.enable(file=crash_log,all_threads=True)
     key='COKKERConverter-'+hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
     socket=QLocalSocket();socket.connectToServer(key)
     args=[str(Path(a).resolve()) for a in sys.argv[1:] if not a.startswith('--')]

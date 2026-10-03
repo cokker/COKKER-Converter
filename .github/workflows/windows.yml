@@ -50,12 +50,38 @@ jobs:
         run: |
           $p = Start-Process -FilePath "dist/COKKER Converter/COKKER Converter.exe" -ArgumentList "--self-test" -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Packaged app smoke test failed: $($p.ExitCode)" }
+      - name: Check icon embedded in portable EXE
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path "dist/COKKER Converter/COKKER Converter.exe").Path)
+          if (-not $icon) { throw "EXE icon missing" }
+          $bitmap = $icon.ToBitmap()
+          $corner = $bitmap.GetPixel(0, 0)
+          $cutout = $bitmap.GetPixel([int]($bitmap.Width * 0.75), [int]($bitmap.Height * 0.75))
+          $dragon = $bitmap.GetPixel([int]($bitmap.Width * 0.33), [int]($bitmap.Height * 0.55))
+          Write-Host "EXE icon $($bitmap.Width)x$($bitmap.Height): corner alpha=$($corner.A), cutout alpha=$($cutout.A), dragon red=$($dragon.R)"
+          if ($corner.A -gt 10 -or $cutout.A -gt 64 -or $dragon.A -lt 180 -or $dragon.R -lt 180) { throw "EXE contains a square background or an older icon" }
+          $bitmap.Dispose(); $icon.Dispose()
       - name: Build installer
         shell: pwsh
         run: |
           Remove-Item "dist/COKKER Converter/portable.flag"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "packaging/setup.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check icon embedded in setup EXE
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path "dist/COKKER-Converter-Setup-x64.exe").Path)
+          if (-not $icon) { throw "Setup icon missing" }
+          $bitmap = $icon.ToBitmap()
+          $corner = $bitmap.GetPixel(0, 0)
+          $cutout = $bitmap.GetPixel([int]($bitmap.Width * 0.75), [int]($bitmap.Height * 0.75))
+          $dragon = $bitmap.GetPixel([int]($bitmap.Width * 0.33), [int]($bitmap.Height * 0.55))
+          Write-Host "Setup icon $($bitmap.Width)x$($bitmap.Height): corner alpha=$($corner.A), cutout alpha=$($cutout.A), dragon red=$($dragon.R)"
+          if ($corner.A -gt 10 -or $cutout.A -gt 64 -or $dragon.A -lt 180 -or $dragon.R -lt 180) { throw "Setup contains a square background or an older icon" }
+          $bitmap.Dispose(); $icon.Dispose()
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

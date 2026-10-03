@@ -374,7 +374,14 @@ class Window(QMainWindow):
             else: w.setText(str(v))
         self._syncing_dimensions=False
     def choose_files(self):
-        files,_=QFileDialog.getOpenFileNames(self,'Добавить файлы',filter=self.section_file_filter()); self.add_paths(files)
+        dialog=self.files_dialog()
+        if dialog.exec()==QDialog.DialogCode.Accepted:self.add_paths(dialog.selectedFiles())
+    def files_dialog(self):
+        dialog=QFileDialog(self,'Добавить файлы')
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog,True)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+        dialog.setNameFilter(self.section_file_filter())
+        return dialog
     def section_file_filter(self):
         extensions={'Видео':'*.mp4 *.mkv *.mov *.avi *.webm *.wmv *.m4v *.mpeg *.mpg *.ts *.mts *.flv *.3gp *.ogv',
                     'Аудио':'*.mp3 *.wav *.flac *.aac *.m4a *.ogg *.opus *.wma *.aiff *.ac3 *.mp4 *.mkv *.mov',
@@ -385,8 +392,11 @@ class Window(QMainWindow):
                     'VRChat':'*.gif *.mp4 *.mkv *.mov'}
         return ('Подходящие файлы ('+extensions[self._section_filter]+')') if self._section_filter in extensions else 'Все файлы (*)'
     def choose_folder(self):
-        path=QFileDialog.getExistingDirectory(self,'Добавить папку')
-        if path: self.add_paths([path])
+        dialog=QFileDialog(self,'Добавить папку')
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog,True)
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly,True)
+        if dialog.exec()==QDialog.DialogCode.Accepted:self.add_paths(dialog.selectedFiles())
     def add_paths(self,paths):
         if not paths: return
         def gather():
