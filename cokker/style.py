@@ -10,6 +10,8 @@ def stylesheet(theme='dark'):
     QLabel#title {{font-size:28px;font-weight:700;}}
     QLabel#subtitle {{color:{muted};font-size:13px;}}
     QLabel#brand {{font-size:20px;font-weight:800;color:#ff9c56;padding:0;}}
+    QLabel#sidebarHint {{color:{muted};font-size:11px;padding:7px 3px 0 3px;}}
+    QFrame#sidebar {{background:{panel};border:1px solid {border};border-radius:18px;}}
     QFrame#card,QGroupBox {{background:{panel};border:1px solid {border};border-radius:16px;padding:14px;}}
     QWidget#componentRow {{background:transparent;}}
     QGroupBox {{margin-top:12px;}}
@@ -21,6 +23,8 @@ def stylesheet(theme='dark'):
     QPushButton:disabled {{color:{muted};}}
     QPushButton#primary {{background:#ff9c56;color:#19130f;font-weight:700;border:1px solid #ff9c56;text-align:center;}}
     QPushButton#primary:hover {{background:#ffb979;}}
+    QPushButton#updateBadge {{background:{selected};color:{fg};border:1px solid #ff9c56;border-radius:10px;padding:8px 10px;min-height:22px;text-align:center;font-size:12px;font-weight:600;}}
+    QPushButton#updateBadge:hover {{background:{hover};}}
     QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox {{background:{panel};border:1px solid {border};border-radius:9px;padding:8px;min-height:22px;}}
     QFrame#card QLineEdit,QFrame#card QComboBox,QFrame#card QSpinBox,QFrame#card QDoubleSpinBox {{background:{panel};}}
     QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus {{border-color:#ff9c56;}}
@@ -29,8 +33,8 @@ def stylesheet(theme='dark'):
     QListWidget {{background:{panel};border:1px solid {border};border-radius:12px;padding:8px;outline:0;}}
     QListWidget::item {{padding:11px;border-radius:9px;}}
     QListWidget::item:selected {{background:{selected};color:{fg};}}
-    QListWidget#nav {{background:transparent;border:0;padding:0 7px 0 0;}}
-    QListWidget#nav::item {{padding:9px 12px;margin:2px 10px 2px 0;border-radius:10px;}}
+    QListWidget#nav {{background:transparent;border:0;padding:2px 7px 2px 1px;outline:0;}}
+    QListWidget#nav::item {{padding:5px 9px;margin:1px 4px 1px 0;border-radius:10px;}}
     QListWidget#nav::item:hover {{background:{hover};}}
     QListWidget#nav::item:selected {{background:{selected};color:{fg};font-weight:600;}}
     QScrollArea {{border:0;background:transparent;}}

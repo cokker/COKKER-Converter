@@ -1,5 +1,5 @@
 #define AppName "COKKER Converter"
-#define AppVersion "0.9.6"
+#define AppVersion "0.9.7"
 [Setup]
 AppId={{61BE2BDA-3616-4761-96A7-4E5BA25EDB92}
 AppName={#AppName}

@@ -111,13 +111,19 @@ class AnimatedButton(QPushButton):
         self._animation.setStartValue(self._accent);self._animation.setEndValue(target);self._animation.start()
     def paintEvent(self,event):
         super().paintEvent(event)
-        if self._press:
-            painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            shade=QColor('#ffffff');shade.setAlphaF(.12*self._press)
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(shade)
-            painter.drawRoundedRect(self.rect().adjusted(2,2,-2,-2),9,9)
-        if self._accent and self.objectName()!='primary':
-            painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            tint=QColor('#ff9c56');tint.setAlphaF(.75*self._accent)
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(tint)
-            painter.drawRoundedRect(QRect(13,self.height()-5,max(0,self.width()-26),2),1,1)
+        if not self._press and not (self._accent and self.objectName()!='primary'):
+            return
+        painter=QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            if self._press:
+                shade=QColor('#ffffff');shade.setAlphaF(.12*self._press)
+                painter.setBrush(shade)
+                painter.drawRoundedRect(self.rect().adjusted(2,2,-2,-2),9,9)
+            if self._accent and self.objectName()!='primary':
+                tint=QColor('#ff9c56');tint.setAlphaF(.75*self._accent)
+                painter.setBrush(tint)
+                painter.drawRoundedRect(QRect(13,self.height()-5,max(0,self.width()-26),2),1,1)
+        finally:
+            painter.end()

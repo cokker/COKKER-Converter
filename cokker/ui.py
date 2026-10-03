@@ -1,4 +1,4 @@
-import json, os, sys, uuid, time, shutil, subprocess, threading, tempfile
+import json, os, sys, uuid, time, shutil, subprocess, threading, tempfile, logging
 from pathlib import Path
 from dataclasses import asdict
 from concurrent.futures import ThreadPoolExecutor
@@ -21,9 +21,13 @@ from .media_info import source_info
 
 class Async(QObject):
     result=Signal(object,object)
-    def __init__(self):
-        super().__init__(); self.pool=ThreadPoolExecutor(max_workers=2); self.result.connect(self.deliver)
-    def deliver(self,callback,value): callback(value)
+    def __init__(self,parent=None):
+        super().__init__(parent); self.pool=ThreadPoolExecutor(max_workers=2); self.result.connect(self.deliver)
+    def deliver(self,callback,value):
+        try: callback(value)
+        except Exception as error:
+            logging.exception('Ошибка обработки результата фоновой задачи')
+            if self.parent(): self.parent().error(error)
     def run(self,fn,callback):
         def work():
             try: value=fn()
@@ -38,7 +42,14 @@ def label(text,kind=None):
 
 def button(text,fn,primary=False):
     b=AnimatedButton(text,animate=lambda:QApplication.instance().property('animations') is not False)
-    b.clicked.connect(lambda checked=False:fn())
+    def invoke(checked=False):
+        try: fn()
+        except Exception as error:
+            logging.exception('Ошибка действия «%s»',text)
+            owner=b.window()
+            if hasattr(owner,'error'):
+                QTimer.singleShot(0,lambda issue=error,window=owner:window.error(issue))
+    b.clicked.connect(invoke)
     if primary: b.setObjectName('primary')
     return b
 
@@ -67,19 +78,24 @@ def size(n):
 class Window(QMainWindow):
     update_progress=Signal(int)
     def __init__(self,store=None):
-        super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async()
+        super().__init__(); self.store=store or Store(); self.presets=Presets(self.store); self.queue=Queue(self.store); self.async_=Async(self)
         self.setWindowTitle('COKKER Converter'); self.resize(1180,820); self.setMinimumSize(840,600); self.setAcceptDrops(True)
         self.exiting=False; self.current='Главная'; self.queue_rows={}; self.controls={}; self.notice_timer=QTimer(self)
         self._source_token=0; self._preset_active=False; self._install_process=None
         self._source_ratio=None;self._source_bytes=0;self._syncing_dimensions=False;self._syncing_size=False
         self._section_filter=None;self._immediate_ids=set();self._preview_token=0
         self._install_output='';self._install_cancelled=False;self._install_tasks=[]
-        self._release=None;self._update_checked=False;self._update_busy=False;self._update_status='Проверка ещё не выполнялась.'
+        self._release=None;self._update_checked=False;self._update_checking=False;self._update_busy=False;self._update_status='Проверка ещё не выполнялась.'
+        self._update_ready=None;self._update_ready_version=None;self._update_ready_kind=None
         self._update_cancel=threading.Event();self._update_percent=0
         self.update_progress.connect(self.on_update_progress)
         QApplication.instance().setProperty('animations',self.store.get('animations',True))
         self.notice_timer.setSingleShot(True);self.notice_timer.timeout.connect(self.notice_timer_done)
         self.build_icon(); self.setWindowIcon(self.icon); self.build(); self.build_tray(); self.apply_theme()
+        self.update_timer=QTimer(self);self.update_timer.timeout.connect(lambda:self.check_update(automatic=True) if self.store.get('update_auto_check',True) else None)
+        self.update_timer.start(60*60*1000)
+        if self.store.get('update_auto_check',True) and os.name=='nt' and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
+            QTimer.singleShot(5000,lambda:self.check_update(automatic=True))
         self.queue.changed.connect(self.refresh_queue); self.queue.completed.connect(self.completed)
         self.tick=QTimer(self); self.tick.timeout.connect(self.refresh_queue); self.tick.start(700)
         self.save_timer=QTimer(self); self.save_timer.setSingleShot(True); self.save_timer.timeout.connect(self.save_window)
@@ -94,21 +110,25 @@ class Window(QMainWindow):
         pix=QPixmap(str(base/'assets'/'logo.png'))
         self.icon=QIcon(pix) if not pix.isNull() else icon_for('vr')
     def build(self):
-        central=QWidget(); self.setCentralWidget(central); root=QHBoxLayout(central); root.setContentsMargins(18,18,18,18); root.setSpacing(22)
-        side=QWidget(); side.setFixedWidth(248); sl=QVBoxLayout(side); sl.setContentsMargins(0,4,8,4);sl.setSpacing(16)
-        branding=QWidget();brand_row=QHBoxLayout(branding);brand_row.setContentsMargins(6,0,6,0);brand_row.setSpacing(10)
-        logo=QLabel();logo.setPixmap(self.icon.pixmap(QSize(54,54)));logo.setFixedSize(54,54);brand_row.addWidget(logo)
+        central=QWidget(); self.setCentralWidget(central); root=QHBoxLayout(central); root.setContentsMargins(16,16,16,16); root.setSpacing(18)
+        side=QFrame();side.setObjectName('sidebar');side.setFixedWidth(232)
+        sl=QVBoxLayout(side);sl.setContentsMargins(13,15,13,15);sl.setSpacing(12)
+        branding=QWidget();brand_row=QHBoxLayout(branding);brand_row.setContentsMargins(3,0,3,0);brand_row.setSpacing(10)
+        logo=QLabel();logo.setPixmap(self.icon.pixmap(QSize(46,46)));logo.setFixedSize(46,46);brand_row.addWidget(logo)
         brand_row.addWidget(label('COKKER\nConverter','brand'),1);sl.addWidget(branding)
         self.nav=QListWidget(); self.nav.setObjectName('nav')
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.nav.setIconSize(QSize(22,22))
+        self.nav.setIconSize(QSize(20,20));self.nav.setSpacing(2)
         for name in ('Главная','Избранное','Очередь','История','Видео','Аудио','Изображения','Документы','PDF','Архивы','Электронные книги','VRChat','Настройки','О программе'):
-            self.nav.addItem(QListWidgetItem(icon_for(name),name))
+            item=QListWidgetItem(icon_for(name),name);item.setSizeHint(QSize(0,40));self.nav.addItem(item)
         self.nav.setCurrentRow(0)
-        self.nav.currentTextChanged.connect(self.navigate); sl.addWidget(self.nav); sl.addWidget(label('Локально. Быстро. Твои файлы.','subtitle')); root.addWidget(side)
+        self.nav.currentTextChanged.connect(self.navigate);sl.addWidget(self.nav)
+        sl.addWidget(label('●  Файлы остаются на устройстве','sidebarHint'));root.addWidget(side)
         main=QWidget(); ml=QVBoxLayout(main); ml.setContentsMargins(0,2,0,0); ml.setSpacing(16)
         top=QHBoxLayout(); self.heading=label('Начнём с файла','title'); top.addWidget(self.heading,1)
-        self.search=QLineEdit(); self.search.setPlaceholderText('Найти инструмент   Ctrl+F'); self.search.setMaximumWidth(300); self.search.textChanged.connect(self.filter_tools); top.addWidget(self.search); ml.addLayout(top)
+        self.update_badge=button('',lambda:self.navigate('Настройки'));self.update_badge.setObjectName('updateBadge')
+        self.update_badge.setMaximumWidth(188);self.update_badge.hide();top.addWidget(self.update_badge)
+        self.search=QLineEdit(); self.search.setPlaceholderText('Найти инструмент   Ctrl+F'); self.search.setMaximumWidth(260);self.search.setMinimumWidth(130); self.search.textChanged.connect(self.filter_tools); top.addWidget(self.search); ml.addLayout(top)
         self.notice=label(''); self.notice.setStyleSheet('color:#ff9c56;padding:8px;'); self.notice.hide(); ml.addWidget(self.notice)
         self.pages=QStackedWidget(); ml.addWidget(self.pages,1); root.addWidget(main,1)
         self.home,self.home_layout=self.page(); self.tools_widget=QWidget(); self.tools_grid=QGridLayout(self.tools_widget); self.tools_grid.setContentsMargins(0,0,0,0)
@@ -392,11 +412,14 @@ class Window(QMainWindow):
                     'VRChat':'*.gif *.mp4 *.mkv *.mov'}
         return ('Подходящие файлы ('+extensions[self._section_filter]+')') if self._section_filter in extensions else 'Все файлы (*)'
     def choose_folder(self):
+        dialog=self.folder_dialog()
+        if dialog.exec()==QDialog.DialogCode.Accepted:self.add_paths(dialog.selectedFiles())
+    def folder_dialog(self):
         dialog=QFileDialog(self,'Добавить папку')
         dialog.setOption(QFileDialog.Option.DontUseNativeDialog,True)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.ShowDirsOnly,True)
-        if dialog.exec()==QDialog.DialogCode.Accepted:self.add_paths(dialog.selectedFiles())
+        return dialog
     def add_paths(self,paths):
         if not paths: return
         def gather():
@@ -852,6 +875,20 @@ class Window(QMainWindow):
         self.extra_layout.addWidget(box)
         box,bl=card();bl.addWidget(label('Обновление программы','title'))
         bl.addWidget(label(f'Установлена версия {__version__}.','subtitle'))
+        automatic_check=QCheckBox('Проверять новые версии при запуске и каждый час')
+        automatic_check.setChecked(self.store.get('update_auto_check',True))
+        def change_auto_check(enabled):
+            self.store.set('update_auto_check',enabled)
+            if enabled:QTimer.singleShot(0,lambda:self.check_update(automatic=True))
+        automatic_check.toggled.connect(change_auto_check);bl.addWidget(automatic_check)
+        automatic_download=QCheckBox('Автоматически скачивать найденное обновление')
+        automatic_download.setChecked(self.store.get('update_auto_download',False))
+        automatic_download.setToolTip('Скачанный файл проверяется и ждёт вашей команды «Установить». Программа не закрывается сама.')
+        def change_auto_download(enabled):
+            self.store.set('update_auto_download',enabled)
+            if enabled and self._release:QTimer.singleShot(0,lambda:self.download_update(automatic=True))
+        automatic_download.toggled.connect(change_auto_download);bl.addWidget(automatic_download)
+        bl.addWidget(label('О новой версии сообщу в окне и через системное уведомление. Установка начинается только по вашему нажатию.','subtitle'))
         bl.addWidget(label(self._update_status,'subtitle'))
         if self._update_busy:
             self.update_bar=QProgressBar();self.update_bar.setRange(0,100);self.update_bar.setValue(self._update_percent)
@@ -860,14 +897,16 @@ class Window(QMainWindow):
             bl.addWidget(button('Проверить обновления',self.check_update))
             if self._release:
                 if os.name=='nt' and getattr(sys,'frozen',False):
-                    install=button(f'Скачать и установить {self._release.version}',self.start_update,True)
+                    ready=self._update_ready_version==self._release.version and self._update_ready and Path(self._update_ready).is_file()
+                    if not ready:bl.addWidget(button('Скачать без установки',self.download_update))
+                    install=button(f'Установить {self._release.version}' if ready else f'Скачать и установить {self._release.version}',self.start_update,True)
                     install.setEnabled(not bool(self.queue.active));bl.addWidget(install)
                     if self.queue.active:bl.addWidget(label('Дождитесь завершения очереди перед обновлением.','subtitle'))
                 else:bl.addWidget(button('Открыть выпуск',lambda:QDesktopServices.openUrl(QUrl(self._release.url))))
         self.extra_layout.addWidget(box)
-        self.extra_layout.addWidget(label('Файлы обрабатываются локально. Проверка версии обращается к GitHub при открытии настроек; загрузка обновления или компонентов начинается только по кнопке.','subtitle'));self.extra_layout.addStretch()
-        if not self._update_checked and os.name=='nt' and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
-            self._update_checked=True;QTimer.singleShot(0,self.check_update)
+        self.extra_layout.addWidget(label('Файлы обрабатываются локально. Для поиска и скачивания обновлений используется GitHub.','subtitle'));self.extra_layout.addStretch()
+        if not self._update_checked and self.store.get('update_auto_check',True) and os.name=='nt' and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
+            QTimer.singleShot(0,lambda:self.check_update(automatic=True))
     def is_bundled_component(self,path):
         base=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parent.parent
         return Path(path).resolve().parent==(base/'components').resolve()
@@ -954,31 +993,49 @@ class Window(QMainWindow):
         theme=self.store.get('theme','dark')
         if theme=='system':theme='dark' if QApplication.styleHints().colorScheme()==Qt.ColorScheme.Dark else 'light'
         QApplication.instance().setStyleSheet(stylesheet(theme))
-    def check_update(self):
-        if self._update_busy:return
-        self._update_checked=True;self._update_status='Проверяю выпуски GitHub…'
+    def refresh_update_badge(self):
+        if self._release:
+            ready=self._update_ready_version==self._release.version and self._update_ready and Path(self._update_ready).is_file()
+            self.update_badge.setText(('Установить ' if ready else 'Доступна ') + self._release.version)
+            self.update_badge.show()
+        else:self.update_badge.hide()
+    def check_update(self,automatic=False):
+        if self._update_busy or self._update_checking:return
+        self._update_checked=True;self._update_checking=True;self._update_status='Проверяю выпуски GitHub…'
         if self.current=='Настройки':self.show_settings()
         def done(value):
+            self._update_checking=False
             if isinstance(value,Exception):self._update_status='Не удалось проверить обновления: '+str(value).splitlines()[-1][:180]
             else:
                 self._release=value
                 self._update_status=f'Доступно обновление {value.version}.' if value else 'Установлена последняя опубликованная версия.'
+                self.refresh_update_badge()
+                if value and automatic and self.store.get('update_notified_version')!=value.version:
+                    self.store.set('update_notified_version',value.version)
+                    self.toast(f'Доступна новая версия {value.version}. Откройте настройки для обновления.')
+                    if self.store.get('notifications',True) and self.tray.isVisible():
+                        self.tray.showMessage('COKKER Converter',f'Доступна версия {value.version}. Установить её можно в настройках.')
+                if value and self.store.get('update_auto_download',False) and os.name=='nt' and getattr(sys,'frozen',False):
+                    QTimer.singleShot(0,lambda:self.download_update(automatic=True))
             if self.current=='Настройки':self.show_settings()
         self.async_.run(lambda:check_release(__version__),done)
     def on_update_progress(self,percent):
         self._update_percent=percent
-        if self.current=='Настройки' and self._update_busy:
+        if self.current=='Настройки' and self._update_busy and hasattr(self,'update_bar'):
             self.update_bar.setValue(percent)
     def cancel_update(self):
         self._update_cancel.set();self._update_status='Останавливаю загрузку…'
         if self.current=='Настройки':self.show_settings()
-    def start_update(self):
+    def download_update(self,automatic=False,install_after=False):
         if not self._release or self._update_busy:return
-        if self.queue.active:self.toast('Дождитесь завершения активных задач.');return
         if os.name!='nt' or not getattr(sys,'frozen',False):
-            QDesktopServices.openUrl(QUrl(self._release.url));return
+            if not automatic:QDesktopServices.openUrl(QUrl(self._release.url))
+            return
         portable=(Path(sys.executable).parent/'portable.flag').exists()
         kind='portable' if portable else 'setup';release=self._release
+        if self._update_ready_version==release.version and self._update_ready_kind==kind and self._update_ready and Path(self._update_ready).is_file():
+            if install_after:self._install_ready_update()
+            return
         self._update_cancel.clear();self._update_busy=True;self._update_percent=0
         self._update_status=f'Загружаю {release.version} и проверяю файл…'
         if self.current=='Настройки':self.show_settings()
@@ -986,28 +1043,57 @@ class Window(QMainWindow):
             folder=self.store.root/'updates'/release.version
             downloaded=download(release,kind,folder,self.update_progress.emit,self._update_cancel)
             if self._update_cancel.is_set():raise InterruptedError('Загрузка отменена.')
-            if portable:return prepare_portable(downloaded,Path(tempfile.gettempdir())/f'COKKER-Update-{release.version}-{uuid.uuid4().hex[:8]}')
             return downloaded
         def ready(result):
             self._update_busy=False
             if isinstance(result,Exception):
-                self._update_status=str(result)
+                self._update_status='Загрузка не завершена: '+str(result)
                 if self.current=='Настройки':self.show_settings()
                 return
-            if self.queue.active:
-                self._update_status='Загрузка завершена. Дождитесь задач и повторите установку.'
+            self._update_ready=result;self._update_ready_version=release.version;self._update_ready_kind=kind
+            self._update_status=f'Версия {release.version} скачана и проверена. Установите её, когда будете готовы.'
+            self.refresh_update_badge()
+            if install_after:
+                self._install_ready_update();return
+            self.toast(self._update_status)
+            if automatic and self.store.get('notifications',True) and self.tray.isVisible():
+                self.tray.showMessage('COKKER Converter',self._update_status)
+            if self.current=='Настройки':self.show_settings()
+        self.async_.run(work,ready)
+    def start_update(self):
+        if not self._release or self._update_busy:return
+        if self.queue.active:self.toast('Дождитесь завершения активных задач.');return
+        self.download_update(install_after=True)
+    def _install_ready_update(self):
+        if self.queue.active:
+            self._update_status='Загрузка завершена. Дождитесь задач и повторите установку.'
+            if self.current=='Настройки':self.show_settings()
+            return
+        if not self._update_ready or not Path(self._update_ready).is_file() or self._update_ready_version!=self._release.version:
+            self._update_status='Файл обновления недоступен. Скачайте его ещё раз.'
+            if self.current=='Настройки':self.show_settings()
+            return
+        portable=self._update_ready_kind=='portable';result=self._update_ready
+        def launch(location):
+            self._update_busy=False
+            if isinstance(location,Exception):
+                self._update_status='Не удалось подготовить обновление: '+str(location)
                 if self.current=='Настройки':self.show_settings()
                 return
             try:
                 if portable:
-                    subprocess.Popen([str(Path(result)/'COKKER Converter.exe'),'--apply-update',str(Path(sys.executable).parent),str(os.getpid())],cwd=result,close_fds=True)
+                    subprocess.Popen([str(Path(location)/'COKKER Converter.exe'),'--apply-update',str(Path(sys.executable).parent),str(os.getpid())],cwd=location,close_fds=True)
                 else:
-                    subprocess.Popen([str(result),'/SP-','/NORESTART','/CLOSEAPPLICATIONS',f'/DIR={Path(sys.executable).parent}'],close_fds=True)
+                    subprocess.Popen([str(location),'/SP-','/NORESTART','/CLOSEAPPLICATIONS',f'/DIR={Path(sys.executable).parent}'],close_fds=True)
                 self.exiting=True;self.close()
             except Exception as error:
                 self._update_status='Не удалось запустить установку: '+str(error)
                 if self.current=='Настройки':self.show_settings()
-        self.async_.run(work,ready)
+        if portable:
+            self._update_busy=True;self._update_status='Подготавливаю Portable-обновление…'
+            if self.current=='Настройки':self.show_settings()
+            self.async_.run(lambda:prepare_portable(result,Path(tempfile.gettempdir())/f'COKKER-Update-{self._release.version}-{uuid.uuid4().hex[:8]}'),launch)
+        else:launch(result)
     def inspect(self):
         paths=self.input_paths()
         if not paths:return

@@ -1,7 +1,7 @@
 import sys, os, json, logging, hashlib, faulthandler
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, qInstallMessageHandler
 from PySide6.QtNetwork import QLocalServer,QLocalSocket
 from PySide6.QtWidgets import QApplication,QPushButton,QDialog
 from cokker.storage import root_dir
@@ -51,6 +51,17 @@ def main():
             trace('add:received:'+str(window.input_paths()))
             paths=window.input_paths()
             if len(paths)!=1 or not Path(paths[0]).samefile(image):raise RuntimeError('Кнопка «Добавить» не загрузила PNG')
+            trace('buttons:painting');warnings=[]
+            previous=qInstallMessageHandler(lambda kind,context,message:warnings.append(message))
+            try:
+                window.show();app.processEvents()
+                for name in ('Добавить','Папка','Удалить выбранные','Информация','Preview / Crop'):
+                    control=next(b for b in window.editor.findChildren(QPushButton) if b.text()==name)
+                    control.set_accent(1);control.set_press(1);control.grab()
+                    control.set_press(0);control.set_accent(0)
+            finally:qInstallMessageHandler(previous)
+            if any('QPainter' in warning for warning in warnings):raise RuntimeError('Повторное рисование кнопок Qt: '+str(warnings))
+            trace('buttons:painted')
             trace('operation:'+str(window.operation.currentData())+':'+str(window.operation.count()))
             if window.operation.currentData()!='image': raise RuntimeError('Автоопределение PNG не работает')
             trace('window:closing');window.exiting=True;window.close();window.store.close();trace('window:closed')

@@ -1,11 +1,13 @@
-import os,tempfile,subprocess,time
+import os,tempfile,subprocess,time,sys
 from pathlib import Path
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication,QDialog,QMessageBox,QPushButton
+from PySide6.QtCore import qInstallMessageHandler
 from PIL import Image
 from cokker.storage import Store
 from cokker.ui import Window
 from cokker.registry import compatible_operations, file_kind
+from cokker.updater import Release
 
 def test_navigation_and_shortcuts():
     app=QApplication.instance() or QApplication([])
@@ -125,4 +127,66 @@ def test_convert_now_opens_history_with_before_after_preview():
         assert window.history_list.count()==1 and window.queue_list.count()==1
         assert not window.history_preview.comparison.before.isNull()
         assert not window.history_preview.comparison.after.isNull()
+        window.exiting=True;window.close()
+
+def test_editor_buttons_after_adding_png(monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);picture=root/'photo.png';Image.new('RGB',(64,48),'orange').save(picture)
+        folder=root/'more';folder.mkdir();extra=folder/'extra.png';Image.new('RGB',(24,24),'blue').save(extra)
+        window=Window(Store(root/'settings'));window.navigate('Изображения')
+        class Selection:
+            def __init__(self,path):self.path=path
+            def exec(self):return QDialog.DialogCode.Accepted
+            def selectedFiles(self):return [str(self.path)]
+        window.files_dialog=lambda:Selection(picture)
+        window.folder_dialog=lambda:Selection(folder)
+        messages=[];monkeypatch.setattr(QMessageBox,'information',lambda *args:messages.append(args[-1]))
+        monkeypatch.setattr(QDialog,'exec',lambda self:QDialog.DialogCode.Rejected)
+        window.async_.run=lambda fn,callback:callback(fn())
+        window.show();app.processEvents()
+        buttons={b.text():b for b in window.editor.findChildren(QPushButton)}
+        warnings=[];previous=qInstallMessageHandler(lambda kind,context,message:warnings.append(message))
+        try:
+            for name in ('Добавить','Папка','Удалить выбранные','Информация','Preview / Crop'):
+                control=buttons[name];control.set_accent(1);control.set_press(1);control.grab()
+                control.set_press(0);control.set_accent(0)
+            buttons['Добавить'].click()
+            assert window.input_paths()==[str(picture)]
+            buttons['Папка'].click()
+            assert window.input_paths()==[str(picture),str(extra)]
+            buttons['Информация'].click()
+            assert messages and '64 × 48' in messages[-1]
+            buttons['Preview / Crop'].click()
+            window.files.item(1).setSelected(True)
+            buttons['Удалить выбранные'].click()
+            assert window.input_paths()==[str(picture)]
+        finally:
+            qInstallMessageHandler(previous)
+            window.exiting=True;window.close()
+        assert not any('QPainter' in warning for warning in warnings)
+
+def test_update_notification_and_opt_in_download(monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        root=Path(tmp);window=Window(Store(root/'settings'))
+        window.async_.run=lambda fn,callback:callback(fn())
+        release=Release('v99.0.0','https://github.com/cokker/COKKER-Converter/releases/tag/v99.0.0',{})
+        monkeypatch.setattr('cokker.ui.check_release',lambda version:release)
+        window.check_update(automatic=True)
+        assert window._release==release and window.update_badge.isHidden() is False
+        assert window.store.get('update_notified_version')==release.version
+        assert window._update_ready is None
+        if os.name=='nt':
+            monkeypatch.setattr(sys,'frozen',True,raising=False)
+            window.store.set('update_auto_download',True)
+            def fake_download(release,kind,folder,progress,cancel):
+                folder.mkdir(parents=True,exist_ok=True)
+                target=folder/'download.exe';target.write_bytes(b'test')
+                progress(100);return target
+            monkeypatch.setattr('cokker.ui.download',fake_download)
+            window.check_update(automatic=True)
+            app.processEvents()
+            assert window._update_ready.is_file() and window._update_ready_kind=='setup'
+            assert window.update_badge.text().startswith('Установить')
         window.exiting=True;window.close()
